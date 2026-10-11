@@ -1,4 +1,4 @@
-# Claude Site Manager
+# AI WP Site Manager
 
 A small WordPress plugin that adds REST endpoints for things the core REST API cannot do:
 update plugins and themes, and install, activate or delete themes. It is used by the
@@ -13,21 +13,21 @@ keep sites up to date remotely.
 
 ## Install
 
-Download [dist/claude-site-manager.zip](dist/claude-site-manager.zip), then in wp-admin go to
+Download [dist/ai-wp-site-manager.zip](dist/ai-wp-site-manager.zip), then in wp-admin go to
 Plugins, Add New Plugin, Upload Plugin, choose the zip, Install Now, Activate.
 
 With WP-CLI:
 
 ```bash
-wp plugin install https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/claude-site-manager/main/dist/claude-site-manager.zip --activate
+wp plugin install https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager.zip --activate
 ```
 
-Alternative: copy `claude-site-manager.php` into `wp-content/mu-plugins/` (top level, not a
+Alternative: copy `ai-wp-site-manager.php` into `wp-content/mu-plugins/` (top level, not a
 subfolder). Must-use plugins cannot be deactivated from wp-admin but also do not self-update.
 
 ## Endpoints
 
-All under `/wp-json/claude/v1/`, JSON in and out, authenticated with an Application Password.
+All under `/wp-json/ai-wp/v1/`, JSON in and out, authenticated with an Application Password.
 
 | Method | Route | Body | Capability |
 |---|---|---|---|
@@ -43,10 +43,10 @@ error. Add `define('FS_METHOD', 'direct');` to `wp-config.php` or fix file owner
 
 ## How self-update works
 
-The plugin header declares `Update URI: https://github.com/FreedomScapeIsNotAvailable/claude-site-manager`.
+The plugin header declares `Update URI: https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager`.
 WordPress therefore asks the plugin itself about updates. The plugin reads
 `dist/manifest.json` from this repository (cached for six hours), compares versions, and if a
-newer one exists offers `dist/claude-site-manager.zip` through the normal update screen. It
+newer one exists offers `dist/ai-wp-site-manager.zip` through the normal update screen. It
 only ever downloads from this repository over HTTPS.
 
 ## Releasing a new version

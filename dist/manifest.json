@@ -1,8 +1,8 @@
 {
-  "name": "Claude Site Manager",
-  "slug": "claude-site-manager",
+  "name": "AI WP Site Manager",
+  "slug": "ai-wp-site-manager",
   "version": "1.1.0",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/claude-site-manager/main/dist/claude-site-manager.zip",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",

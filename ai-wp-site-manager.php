@@ -1,13 +1,13 @@
 <?php
 /**
- * Plugin Name:       Claude Site Manager
- * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/claude-site-manager
- * Description:       REST endpoints (namespace claude/v1) for plugin/theme updates and theme install/switch/delete, which the core REST API does not provide. Used by the team's Claude WordPress connector. Updates itself from GitHub.
+ * Plugin Name:       AI WP Site Manager
+ * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
+ * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme install/switch/delete, which the core REST API does not provide. Used by the team's Claude WordPress connector. Updates itself from GitHub.
  * Version:           1.1.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
- * Update URI:        https://github.com/FreedomScapeIsNotAvailable/claude-site-manager
+ * Update URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  *
  * Every endpoint requires the normal WordPress capability for the action
  * (update_plugins, update_themes, install_themes, switch_themes, delete_themes),
@@ -25,7 +25,7 @@ defined( 'ABSPATH' ) || exit;
 add_action( 'rest_api_init', 'csm_register_routes' );
 
 function csm_register_routes() {
-	$ns = 'claude/v1';
+	$ns = 'ai-wp/v1';
 
 	register_rest_route( $ns, '/updates', array(
 		'methods'             => 'GET',
@@ -355,9 +355,9 @@ function csm_delete_theme( WP_REST_Request $req ) {
 /* ------------------------------------------------------------------ self-update */
 
 define( 'CSM_VERSION', '1.1.0' );
-define( 'CSM_SLUG', 'claude-site-manager' );
-define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/claude-site-manager' );
-define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/claude-site-manager/main/dist/manifest.json' );
+define( 'CSM_SLUG', 'ai-wp-site-manager' );
+define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
+define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
 
 add_filter( 'update_plugins_github.com', 'csm_check_update', 10, 4 );
 add_filter( 'plugins_api', 'csm_plugin_information', 10, 3 );
@@ -380,7 +380,7 @@ function csm_fetch_manifest( $force = false ) {
 		return false;
 	}
 	// Only ever download from the repository's own raw files over HTTPS.
-	if ( 0 !== strpos( $manifest['package'], 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/claude-site-manager/' ) ) {
+	if ( 0 !== strpos( $manifest['package'], 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/' ) ) {
 		return false;
 	}
 	set_site_transient( 'csm_update_manifest', $manifest, 6 * HOUR_IN_SECONDS );
@@ -396,7 +396,7 @@ function csm_check_update( $update, $plugin_data, $plugin_file, $locales ) {
 		return $update;
 	}
 	return array(
-		'id'           => 'github.com/FreedomScapeIsNotAvailable/claude-site-manager',
+		'id'           => 'github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager',
 		'slug'         => CSM_SLUG,
 		'plugin'       => $plugin_file,
 		'version'      => $manifest['version'],
@@ -418,7 +418,7 @@ function csm_plugin_information( $result, $action, $args ) {
 		return $result;
 	}
 	return (object) array(
-		'name'          => 'Claude Site Manager',
+		'name'          => 'AI WP Site Manager',
 		'slug'          => CSM_SLUG,
 		'version'       => $manifest['version'],
 		'author'        => 'reallife.solutions',

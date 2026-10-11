@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Build dist/claude-site-manager.zip and dist/manifest.json from claude-site-manager.php.
+Build dist/ai-wp-site-manager.zip and dist/manifest.json from ai-wp-site-manager.php.
 
 Release procedure:
-  1. Edit claude-site-manager.php: bump `Version:` in the header AND the CSM_VERSION constant.
+  1. Edit ai-wp-site-manager.php: bump `Version:` in the header AND the CSM_VERSION constant.
   2. Add a line under the new version in CHANGELOG.md.
   3. python build.py
   4. git add -A && git commit -m "Release x.y.z" && git push
@@ -16,9 +16,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PLUGIN = ROOT / "claude-site-manager.php"
+PLUGIN = ROOT / "ai-wp-site-manager.php"
 DIST = ROOT / "dist"
-RAW_BASE = "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/claude-site-manager/main/dist/"
+RAW_BASE = "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/"
 
 src = PLUGIN.read_text(encoding="utf-8")
 
@@ -42,15 +42,15 @@ if cl.exists():
         changelog = f"<h4>{version}</h4><ul>" + "".join(f"<li>{i}</li>" for i in items) + "</ul>"
 
 DIST.mkdir(exist_ok=True)
-zip_path = DIST / "claude-site-manager.zip"
+zip_path = DIST / "ai-wp-site-manager.zip"
 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-    z.write(PLUGIN, "claude-site-manager/claude-site-manager.php")
+    z.write(PLUGIN, "ai-wp-site-manager/ai-wp-site-manager.php")
 
 manifest = {
-    "name": "Claude Site Manager",
-    "slug": "claude-site-manager",
+    "name": "AI WP Site Manager",
+    "slug": "ai-wp-site-manager",
     "version": version,
-    "package": RAW_BASE + "claude-site-manager.zip",
+    "package": RAW_BASE + "ai-wp-site-manager.zip",
     "requires": header("Requires at least", "5.8"),
     "requires_php": header("Requires PHP", "7.4"),
     "tested": header("Tested up to", ""),
