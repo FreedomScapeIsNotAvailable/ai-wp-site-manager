@@ -69,7 +69,8 @@ REST: `GET|POST ai-wp/v1/redirects` with `{"text": "..."}`.
 Write `{INCLUDE:/pricepage/}` (or a full URL on the same host) anywhere in a page or post.
 On display it is replaced with the HTML that URL returns, so a script elsewhere on the site
 can generate part of a page. Results are cached for 10 minutes (`ai_wp_include_ttl` filter);
-if the URL fails, the last successful copy is shown. Other hosts are refused. On LiteSpeed
+if the URL fails, the last successful copy is shown. Only this site and the team's own hosts
+(bocp.ro, cloudsales.ro; filter `ai_wp_include_hosts`) are accepted. On LiteSpeed
 Cache sites the page's cache lifetime is lowered to the same 10 minutes.
 
 ## How self-update works

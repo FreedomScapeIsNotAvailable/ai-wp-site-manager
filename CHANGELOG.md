@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.7.0
+- Content includes may read from the team's own sites (bocp.ro, cloudsales.ro; filter ai_wp_include_hosts), so one price script can feed several sites.
+
 ## 1.6.1
 - GET/POST ai-wp/v1/theme-mods: read and set the active theme's Customizer settings (logo, colours, header buttons) remotely, so a theme switch can be completed in one go.
 

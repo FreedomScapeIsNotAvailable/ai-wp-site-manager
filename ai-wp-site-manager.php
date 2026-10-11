@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.6.1
+ * Version:           1.7.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -406,7 +406,7 @@ function csm_delete_theme( WP_REST_Request $req ) {
 
 /*
  * {INCLUDE:/some/path/} or {INCLUDE:https://this-site.tld/some/path/} inside post/page content is
- * replaced with the HTML that URL returns. Only URLs on this site's own host are allowed. The
+ * replaced with the HTML that URL returns. Only this site and the team's own hosts are allowed. The
  * result is cached for AIWP_INCLUDE_TTL seconds (filter 'ai_wp_include_ttl'); if the fetch fails,
  * the last good copy is used so a hiccup in the generating script never blanks the page.
  * LiteSpeed's page cache TTL is lowered to the same value on pages that contain an include.
@@ -432,15 +432,23 @@ function aiwp_render_includes( $content ) {
 	);
 }
 
+/** Hosts whose HTML may be included: this site plus the team's own sites (filter ai_wp_include_hosts to extend). */
+define( 'AIWP_INCLUDE_HOSTS', 'bocp.ro,www.bocp.ro,cloudsales.ro,www.cloudsales.ro' );
+function aiwp_include_allowed_hosts() {
+	$hosts   = array_map( 'trim', explode( ',', AIWP_INCLUDE_HOSTS ) );
+	$hosts[] = strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
+	return array_values( array_unique( array_filter( array_map( 'strtolower', apply_filters( 'ai_wp_include_hosts', $hosts ) ) ) ) );
+}
+
 function aiwp_fetch_include( $target, $ttl ) {
 	$home = wp_parse_url( home_url() );
 	if ( 0 === strpos( $target, '/' ) ) {
 		$url = home_url( $target );
 	} else {
 		$url  = $target;
-		$host = wp_parse_url( $url, PHP_URL_HOST );
-		if ( ! $host || strtolower( $host ) !== strtolower( $home['host'] ) ) {
-			return null; // other hosts are not allowed
+		$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+		if ( ! $host || ! in_array( $host, aiwp_include_allowed_hosts(), true ) ) {
+			return null; // only this site and the team's own sites may be included
 		}
 	}
 	$key   = 'aiwp_inc_' . md5( $url );
@@ -1068,7 +1076,7 @@ function aiwp_register_theme_mod_routes() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.6.1' );
+define( 'CSM_VERSION', '1.7.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

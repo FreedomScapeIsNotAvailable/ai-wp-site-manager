@@ -1,10 +1,10 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.6.1",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.6.1.zip",
+  "version": "1.7.0",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.7.0.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "changelog": "<h4>1.6.1</h4><ul><li>GET/POST ai-wp/v1/theme-mods: read and set the active theme's Customizer settings (logo, colours, header buttons) remotely, so a theme switch can be completed in one go.</li></ul>"
+  "changelog": "<h4>1.7.0</h4><ul><li>Content includes may read from the team's own sites (bocp.ro, cloudsales.ro; filter ai_wp_include_hosts), so one price script can feed several sites.</li></ul>"
 }
