@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3.2
+- Enables WordPress automatic updates for this plugin on first run (can be switched off on the Plugins page).
+
 ## 1.3.1
 - The updates endpoint always performs a real check instead of reusing WordPress's 12-hour cached result.
 

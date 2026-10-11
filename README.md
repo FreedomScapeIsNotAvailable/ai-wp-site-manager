@@ -66,6 +66,9 @@ WordPress therefore asks the plugin itself about updates. The plugin reads
 newer one exists offers `dist/ai-wp-site-manager.zip` through the normal update screen. It
 only ever downloads from this repository over HTTPS.
 
+On first run the plugin enables WordPress's automatic updates for itself, so sites install new
+releases on their own within about 12 hours. Administrators can disable that on the Plugins page.
+
 ## Releasing a new version
 
 See the docstring in `build.py`. In short: bump the version in the PHP header and the

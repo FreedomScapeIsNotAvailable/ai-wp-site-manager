@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.3.1
+ * Version:           1.3.2
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -673,12 +673,31 @@ function aiwp_settings_page() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.3.1' );
+define( 'CSM_VERSION', '1.3.2' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
 
 add_filter( 'update_plugins_github.com', 'csm_check_update', 10, 4 );
+
+/*
+ * Opt this plugin into WordPress's own automatic updates once, the same as clicking
+ * "Enable auto-updates" on the Plugins page. Administrators can switch it off there again.
+ * WordPress then installs new releases on its own during its twice-daily update check.
+ */
+add_action( 'init', 'csm_enable_auto_update_once' );
+function csm_enable_auto_update_once() {
+	if ( get_site_option( 'csm_autoupdate_opted' ) ) {
+		return;
+	}
+	$me   = plugin_basename( __FILE__ );
+	$list = (array) get_site_option( 'auto_update_plugins', array() );
+	if ( ! in_array( $me, $list, true ) ) {
+		$list[] = $me;
+		update_site_option( 'auto_update_plugins', array_values( array_unique( $list ) ) );
+	}
+	update_site_option( 'csm_autoupdate_opted', 1 );
+}
 add_filter( 'plugins_api', 'csm_plugin_information', 10, 3 );
 
 /** Fetch and cache the release manifest: { version, package, requires, requires_php, tested, changelog }. */
