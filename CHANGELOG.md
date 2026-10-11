@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3.1
+- The updates endpoint always performs a real check instead of reusing WordPress's 12-hour cached result.
+
 ## 1.3.0
 - Settings -> AI Site Manager: edit the physical llms.txt and robots.txt in the web root, with previous-version restore and a warning for site-wide Disallow rules.
 - REST: GET/POST ai-wp/v1/rootfiles/<name> and POST .../restore (Administrators).

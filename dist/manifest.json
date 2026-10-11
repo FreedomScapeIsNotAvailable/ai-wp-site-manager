@@ -1,10 +1,10 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "changelog": "<h4>1.3.0</h4><ul><li>Settings -> AI Site Manager: edit the physical llms.txt and robots.txt in the web root, with previous-version restore and a warning for site-wide Disallow rules.</li><li>REST: GET/POST ai-wp/v1/rootfiles/<name> and POST .../restore (Administrators).</li></ul>"
+  "changelog": "<h4>1.3.1</h4><ul><li>The updates endpoint always performs a real check instead of reusing WordPress's 12-hour cached result.</li></ul>"
 }
