@@ -50,6 +50,13 @@ working and nothing needs deleting. The previous version is kept for a one-click
 `GET ai-wp/v1/rootfiles`, `GET|POST ai-wp/v1/rootfiles/<name>` with `{"content": "..."}`,
 `POST ai-wp/v1/rootfiles/<name>/restore`.
 
+## Application passwords without the REST route
+
+Some hosting firewalls answer 403 to anything under `/wp-json/wp/v2/users/`, which breaks the
+Profile page's Application Passwords box. Settings -> AI Site Manager lists, creates and revokes
+the logged-in administrator's application passwords server-side, so the connector can be set up
+on such hosts too.
+
 ## Content includes
 
 Write `{INCLUDE:/pricepage/}` (or a full URL on the same host) anywhere in a page or post.

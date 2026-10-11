@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.3.2
+ * Version:           1.4.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -626,7 +626,7 @@ function aiwp_settings_page() {
 	}
 	echo '<div class="wrap"><h1>AI Site Manager</h1>';
 	echo '<p>Version ' . esc_html( CSM_VERSION ) . '. Edits the files below directly in the web root, so what you see here is exactly what crawlers and AI agents receive. Each save keeps the previous version for a one-click restore.</p>';
-	if ( $notice ) {
+	if ( $notice && 'created' !== $notice['status'] ) {
 		$class = 'error' === $notice['status'] ? 'notice-error' : 'notice-success';
 		$text  = 'error' === $notice['status'] ? $notice['message'] : ucfirst( $notice['status'] ) . ' ' . $notice['file'] . '.';
 		echo '<div class="notice ' . esc_attr( $class ) . ' is-dismissible"><p>' . esc_html( $text ) . '</p></div>';
@@ -667,13 +667,97 @@ function aiwp_settings_page() {
 		}
 		echo '</p></form>';
 	}
+	aiwp_render_app_passwords_section( $notice );
 	echo '<h2 style="margin-top:2em">Content includes</h2><p class="description">Write <code>{INCLUDE:/some/path/}</code> in any page or post to insert the HTML that same-site URL returns (cached ' . esc_html( AIWP_INCLUDE_TTL / 60 ) . ' minutes).</p>';
 	echo '</div>';
 }
 
+/* ------------------------------------------------------------------ application passwords (admin page, no REST) */
+
+/*
+ * Some hosting firewalls return an HTML 403 for anything under /wp-json/wp/v2/users/, which breaks the
+ * profile page's Application Passwords box (it creates and revokes over that route). This section does the
+ * same operations server-side from Settings -> AI Site Manager, for the logged-in administrator only.
+ */
+add_action( 'admin_post_aiwp_app_password', 'aiwp_handle_app_password_form' );
+function aiwp_handle_app_password_form() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( 'Not allowed.' );
+	}
+	check_admin_referer( 'aiwp_app_password' );
+	$user_id = get_current_user_id();
+	$action  = isset( $_POST['aiwp_action'] ) ? sanitize_key( $_POST['aiwp_action'] ) : '';
+	$notice  = array( 'status' => 'error', 'file' => '', 'message' => 'Unknown action.' );
+
+	if ( 'create' === $action ) {
+		$name = isset( $_POST['aiwp_name'] ) ? sanitize_text_field( wp_unslash( $_POST['aiwp_name'] ) ) : '';
+		if ( '' === $name ) {
+			$notice['message'] = 'Give the application password a name.';
+		} elseif ( ! wp_is_application_passwords_available_for_user( $user_id ) ) {
+			$notice['message'] = 'Application passwords are disabled for this user (check Wordfence or a similar plugin, and that the site uses HTTPS).';
+		} else {
+			$created = WP_Application_Passwords::create_new_application_password( $user_id, array( 'name' => $name ) );
+			if ( is_wp_error( $created ) ) {
+				$notice['message'] = $created->get_error_message();
+			} else {
+				// Shown once on the next page load, then forgotten; WordPress stores only a hash.
+				$notice = array( 'status' => 'created', 'file' => $name, 'message' => WP_Application_Passwords::chunk_password( $created[0] ) );
+			}
+		}
+	} elseif ( 'revoke' === $action ) {
+		$uuid = isset( $_POST['aiwp_uuid'] ) ? sanitize_text_field( wp_unslash( $_POST['aiwp_uuid'] ) ) : '';
+		$res  = WP_Application_Passwords::delete_application_password( $user_id, $uuid );
+		$notice = is_wp_error( $res ) ? array( 'status' => 'error', 'file' => '', 'message' => $res->get_error_message() ) : array( 'status' => 'revoked', 'file' => 'application password', 'message' => '' );
+	} elseif ( 'revoke_all' === $action ) {
+		$res    = WP_Application_Passwords::delete_all_application_passwords( $user_id );
+		$notice = is_wp_error( $res ) ? array( 'status' => 'error', 'file' => '', 'message' => $res->get_error_message() ) : array( 'status' => 'revoked', 'file' => 'all application passwords', 'message' => '' );
+	}
+
+	set_transient( 'aiwp_notice_' . $user_id, $notice, 60 );
+	wp_safe_redirect( admin_url( 'options-general.php?page=ai-wp-site-manager#app-passwords' ) );
+	exit;
+}
+
+/** Rendered inside aiwp_settings_page(). $notice is the pending notice (already fetched there). */
+function aiwp_render_app_passwords_section( $notice ) {
+	$user_id = get_current_user_id();
+	echo '<h2 id="app-passwords" style="margin-top:2em">Application passwords for ' . esc_html( wp_get_current_user()->user_login ) . '</h2>';
+	echo '<p class="description">The same list as on your Profile page, handled inside WordPress instead of over the REST API, for hosts whose firewall blocks that route. Application passwords let tools such as the Claude connector act as this user.</p>';
+	if ( $notice && 'created' === $notice['status'] ) {
+		echo '<div class="notice notice-success inline"><p>New application password for <strong>' . esc_html( $notice['file'] ) . '</strong>. Copy it now, it will not be shown again:</p>';
+		echo '<p><code style="font-size:1.2em;user-select:all">' . esc_html( $notice['message'] ) . '</code></p></div>';
+	}
+	$items = WP_Application_Passwords::get_user_application_passwords( $user_id );
+	if ( $items ) {
+		echo '<table class="widefat striped" style="max-width:900px"><thead><tr><th>Name</th><th>Created</th><th>Last used</th><th>Last IP</th><th></th></tr></thead><tbody>';
+		foreach ( $items as $item ) {
+			echo '<tr><td>' . esc_html( $item['name'] ) . '</td>';
+			echo '<td>' . esc_html( $item['created'] ? wp_date( 'Y-m-d H:i', $item['created'] ) : '' ) . '</td>';
+			echo '<td>' . esc_html( $item['last_used'] ? wp_date( 'Y-m-d H:i', $item['last_used'] ) : 'never' ) . '</td>';
+			echo '<td>' . esc_html( $item['last_ip'] ? $item['last_ip'] : '' ) . '</td>';
+			echo '<td><form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin:0">';
+			wp_nonce_field( 'aiwp_app_password' );
+			echo '<input type="hidden" name="action" value="aiwp_app_password"><input type="hidden" name="aiwp_action" value="revoke"><input type="hidden" name="aiwp_uuid" value="' . esc_attr( $item['uuid'] ) . '">';
+			echo '<button type="submit" class="button button-small" onclick="return confirm(' . esc_attr( wp_json_encode( 'Revoke "' . $item['name'] . '"? Anything using it stops working.' ) ) . ')">Revoke</button></form></td></tr>';
+		}
+		echo '</tbody></table>';
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin:8px 0 16px">';
+		wp_nonce_field( 'aiwp_app_password' );
+		echo '<input type="hidden" name="action" value="aiwp_app_password"><input type="hidden" name="aiwp_action" value="revoke_all">';
+		echo '<button type="submit" class="button" onclick="return confirm(' . esc_attr( wp_json_encode( 'Revoke every application password of this user?' ) ) . ')">Revoke all</button></form>';
+	} else {
+		echo '<p>No application passwords for this user.</p>';
+	}
+	echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+	wp_nonce_field( 'aiwp_app_password' );
+	echo '<input type="hidden" name="action" value="aiwp_app_password"><input type="hidden" name="aiwp_action" value="create">';
+	echo '<p><label>Name for a new application password <input type="text" name="aiwp_name" class="regular-text" placeholder="Claude Code" required></label> ';
+	echo '<button type="submit" class="button button-primary">Create</button></p></form>';
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.3.2' );
+define( 'CSM_VERSION', '1.4.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

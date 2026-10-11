@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.0
+- Settings page: list, create and revoke the current administrator's application passwords inside WordPress, for hosts whose firewall blocks /wp-json/wp/v2/users/.
+
 ## 1.3.2
 - Enables WordPress automatic updates for this plugin on first run (can be switched off on the Plugins page).
 
