@@ -2,7 +2,7 @@
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
   "version": "1.6.1",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager.zip",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.6.1.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",

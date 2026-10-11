@@ -45,12 +45,17 @@ DIST.mkdir(exist_ok=True)
 zip_path = DIST / "ai-wp-site-manager.zip"
 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
     z.write(PLUGIN, "ai-wp-site-manager/ai-wp-site-manager.php")
+# Versioned copy: the manifest points at it, so GitHub's CDN can never serve a stale zip for a new version.
+versioned = DIST / f"ai-wp-site-manager-{version}.zip"
+versioned.write_bytes(zip_path.read_bytes())
+for old_zip in sorted(DIST.glob("ai-wp-site-manager-*.zip"))[:-3]:
+    old_zip.unlink()
 
 manifest = {
     "name": "AI WP Site Manager",
     "slug": "ai-wp-site-manager",
     "version": version,
-    "package": RAW_BASE + "ai-wp-site-manager.zip",
+    "package": RAW_BASE + versioned.name,
     "requires": header("Requires at least", "5.8"),
     "requires_php": header("Requires PHP", "7.4"),
     "tested": header("Tested up to", ""),
