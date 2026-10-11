@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.1
+- The updates endpoint fires the ai_wp_before_update_check action so self-updating themes (e.g. the BOCP theme) refresh their release manifest immediately.
+
 ## 1.5.0
 - 301 redirects: `/old/ -> /new/` lines in Settings -> AI Site Manager and at ai-wp/v1/redirects. Needed for renamed or removed pages, which WordPress core never redirects by itself.
 
