@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme install/switch/delete, which the core REST API does not provide. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.1.0
+ * Version:           1.1.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -23,6 +23,41 @@
 defined( 'ABSPATH' ) || exit;
 
 add_action( 'rest_api_init', 'csm_register_routes' );
+
+/*
+ * Never let page caches store our responses. LiteSpeed Cache (and some CDNs) treat
+ * Application-Password requests as anonymous because they carry no login cookie, and
+ * would otherwise serve an administrator's update list to the public for days.
+ */
+add_filter( 'rest_post_dispatch', 'csm_no_cache_headers', 10, 3 );
+function csm_no_cache_headers( $response, $server, $request ) {
+	if ( 0 !== strpos( $request->get_route(), '/ai-wp/v1/' ) ) {
+		return $response;
+	}
+	if ( ! ( $response instanceof WP_HTTP_Response ) ) {
+		$response = rest_ensure_response( $response );
+	}
+	foreach ( wp_get_nocache_headers() as $name => $value ) {
+		$response->header( $name, $value );
+	}
+	$response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0, private' );
+	$response->header( 'X-LiteSpeed-Cache-Control', 'no-cache' );
+	do_action( 'litespeed_control_set_nocache', 'ai-wp-site-manager API response' );
+	return $response;
+}
+
+/* After this plugin is updated, flush LiteSpeed's page cache so no stale copy of our responses survives. */
+add_action( 'upgrader_process_complete', 'csm_purge_after_self_update', 10, 2 );
+function csm_purge_after_self_update( $upgrader, $hook_extra ) {
+	if ( empty( $hook_extra['type'] ) || 'plugin' !== $hook_extra['type'] ) {
+		return;
+	}
+	$plugins = isset( $hook_extra['plugins'] ) ? (array) $hook_extra['plugins'] : array();
+	if ( in_array( plugin_basename( __FILE__ ), $plugins, true ) ) {
+		do_action( 'litespeed_purge_all' );
+	}
+}
+register_activation_hook( __FILE__, function () { do_action( 'litespeed_purge_all' ); } );
 
 function csm_register_routes() {
 	$ns = 'ai-wp/v1';
@@ -133,6 +168,7 @@ function csm_skin_error( WP_Ajax_Upgrader_Skin $skin, $fallback ) {
 
 function csm_list_updates() {
 	csm_includes();
+	delete_site_transient( 'csm_update_manifest' ); // always look for a fresh release of this plugin too
 	wp_version_check( array(), true );
 	wp_update_plugins();
 	wp_update_themes();
@@ -354,7 +390,7 @@ function csm_delete_theme( WP_REST_Request $req ) {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.1.0' );
+define( 'CSM_VERSION', '1.1.1' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
