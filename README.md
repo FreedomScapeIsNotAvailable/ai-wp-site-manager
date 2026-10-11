@@ -41,6 +41,15 @@ All under `/wp-json/ai-wp/v1/`, JSON in and out, authenticated with an Applicati
 Hosts that need FTP credentials for updates (filesystem method is not `direct`) get a clear
 error. Add `define('FS_METHOD', 'direct');` to `wp-config.php` or fix file ownership.
 
+## Settings page: llms.txt and robots.txt
+
+Settings -> AI Site Manager (Administrators only) edits the physical `llms.txt` and `robots.txt`
+in the web root. Files are edited in place and created on first save, so existing files keep
+working and nothing needs deleting. The previous version is kept for a one-click restore, and a
+`Disallow: /` line triggers a warning. The same operations are available over REST:
+`GET ai-wp/v1/rootfiles`, `GET|POST ai-wp/v1/rootfiles/<name>` with `{"content": "..."}`,
+`POST ai-wp/v1/rootfiles/<name>/restore`.
+
 ## Content includes
 
 Write `{INCLUDE:/pricepage/}` (or a full URL on the same host) anywhere in a page or post.

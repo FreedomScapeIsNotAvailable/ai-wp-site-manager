@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
- * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes from the site's own URLs. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.2.1
+ * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
+ * Version:           1.3.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -455,9 +455,217 @@ function aiwp_fetch_include( $target, $ttl ) {
 	return is_string( $stale ) ? $stale : null;
 }
 
+/* ------------------------------------------------------------------ root files (llms.txt, robots.txt) */
+
+/*
+ * Settings -> AI Site Manager lets Administrators edit the physical llms.txt and robots.txt in the
+ * site's web root. Files are edited in place (created on first save), the previous version is kept
+ * for a one-click restore, and the same operations are exposed at ai-wp/v1/rootfiles for the connector.
+ */
+define( 'AIWP_ROOT_FILES', 'llms.txt,robots.txt' );
+
+function aiwp_root_file_names() {
+	return explode( ',', AIWP_ROOT_FILES );
+}
+
+function aiwp_root_dir() {
+	require_once ABSPATH . 'wp-admin/includes/file.php';
+	return trailingslashit( get_home_path() ); // web root, even when WordPress lives in a subdirectory
+}
+
+function aiwp_root_file_path( $name ) {
+	return in_array( $name, aiwp_root_file_names(), true ) ? aiwp_root_dir() . $name : null;
+}
+
+function aiwp_root_file_info( $name ) {
+	$path = aiwp_root_file_path( $name );
+	if ( ! $path ) {
+		return null;
+	}
+	$exists = file_exists( $path );
+	$prev   = get_option( 'aiwp_rootfile_prev_' . $name );
+	return array(
+		'name'     => $name,
+		'path'     => $path,
+		'url'      => home_url( '/' . $name ),
+		'exists'   => $exists,
+		'content'  => $exists ? (string) file_get_contents( $path ) : '',
+		'size'     => $exists ? filesize( $path ) : 0,
+		'modified' => $exists ? gmdate( 'c', filemtime( $path ) ) : null,
+		'writable' => $exists ? is_writable( $path ) : is_writable( aiwp_root_dir() ),
+		'previous' => is_array( $prev ) ? $prev['saved'] : null,
+	);
+}
+
+function aiwp_root_file_write( $name, $content ) {
+	$path = aiwp_root_file_path( $name );
+	if ( ! $path ) {
+		return new WP_Error( 'aiwp_bad_file', 'Unknown file.', array( 'status' => 400 ) );
+	}
+	$content = str_replace( array( "\r\n", "\r" ), "\n", (string) $content );
+	if ( '' !== $content && "\n" !== substr( $content, -1 ) ) {
+		$content .= "\n";
+	}
+	if ( file_exists( $path ) ) {
+		update_option( 'aiwp_rootfile_prev_' . $name, array( 'saved' => current_time( 'c' ), 'content' => (string) file_get_contents( $path ) ), false );
+	}
+	$ok = ( false !== file_put_contents( $path, $content, LOCK_EX ) );
+	if ( ! $ok ) {
+		return new WP_Error( 'aiwp_not_writable', 'Could not write ' . $path . '. Check file permissions on the web root.', array( 'status' => 500 ) );
+	}
+	do_action( 'litespeed_purge_url', home_url( '/' . $name ) );
+	return aiwp_root_file_info( $name );
+}
+
+function aiwp_root_file_restore( $name ) {
+	$prev = get_option( 'aiwp_rootfile_prev_' . $name );
+	if ( ! is_array( $prev ) ) {
+		return new WP_Error( 'aiwp_no_previous', 'No previous version stored.', array( 'status' => 404 ) );
+	}
+	return aiwp_root_file_write( $name, $prev['content'] );
+}
+
+/** Lines that would hide the whole site from a crawler. */
+function aiwp_robots_warnings( $content ) {
+	$warnings = array();
+	if ( preg_match( '/^\s*Disallow:\s*\/\s*$/mi', $content ) ) {
+		$warnings[] = 'Contains "Disallow: /" which blocks an entire crawler from the whole site.';
+	}
+	return $warnings;
+}
+
+/* REST: GET ai-wp/v1/rootfiles, GET/POST ai-wp/v1/rootfiles/<name>, POST ai-wp/v1/rootfiles/<name>/restore */
+add_action( 'rest_api_init', 'aiwp_register_rootfile_routes' );
+function aiwp_register_rootfile_routes() {
+	$can = function () {
+		return current_user_can( 'manage_options' );
+	};
+	register_rest_route( 'ai-wp/v1', '/rootfiles', array(
+		'methods'             => 'GET',
+		'permission_callback' => $can,
+		'callback'            => function () {
+			return array_map( 'aiwp_root_file_info', aiwp_root_file_names() );
+		},
+	) );
+	register_rest_route( 'ai-wp/v1', '/rootfiles/(?P<name>[a-z0-9.-]+)', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $can,
+			'callback'            => function ( $req ) {
+				$info = aiwp_root_file_info( $req['name'] );
+				return $info ? $info : new WP_Error( 'aiwp_bad_file', 'Unknown file.', array( 'status' => 404 ) );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $can,
+			'args'                => array( 'content' => array( 'required' => true, 'type' => 'string' ) ),
+			'callback'            => function ( $req ) {
+				$res = aiwp_root_file_write( $req['name'], $req->get_param( 'content' ) );
+				if ( ! is_wp_error( $res ) && 'robots.txt' === $req['name'] ) {
+					$res['warnings'] = aiwp_robots_warnings( $res['content'] );
+				}
+				return $res;
+			},
+		),
+	) );
+	register_rest_route( 'ai-wp/v1', '/rootfiles/(?P<name>[a-z0-9.-]+)/restore', array(
+		'methods'             => 'POST',
+		'permission_callback' => $can,
+		'callback'            => function ( $req ) {
+			return aiwp_root_file_restore( $req['name'] );
+		},
+	) );
+}
+
+/* Admin page: Settings -> AI Site Manager */
+add_action( 'admin_menu', 'aiwp_register_settings_page' );
+function aiwp_register_settings_page() {
+	add_options_page( 'AI Site Manager', 'AI Site Manager', 'manage_options', 'ai-wp-site-manager', 'aiwp_settings_page' );
+}
+
+add_action( 'admin_post_aiwp_save_rootfile', 'aiwp_handle_rootfile_form' );
+function aiwp_handle_rootfile_form() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( 'Not allowed.' );
+	}
+	$name = isset( $_POST['aiwp_file'] ) ? sanitize_file_name( wp_unslash( $_POST['aiwp_file'] ) ) : '';
+	check_admin_referer( 'aiwp_rootfile_' . $name );
+	$action = isset( $_POST['aiwp_action'] ) ? sanitize_key( $_POST['aiwp_action'] ) : 'save';
+	if ( 'restore' === $action ) {
+		$res = aiwp_root_file_restore( $name );
+	} else {
+		$content = isset( $_POST['aiwp_content'] ) ? wp_unslash( $_POST['aiwp_content'] ) : '';
+		$res     = aiwp_root_file_write( $name, $content );
+	}
+	$status = is_wp_error( $res ) ? 'error' : ( 'restore' === $action ? 'restored' : 'saved' );
+	set_transient(
+		'aiwp_notice_' . get_current_user_id(),
+		array( 'status' => $status, 'file' => $name, 'message' => is_wp_error( $res ) ? $res->get_error_message() : '' ),
+		60
+	);
+	wp_safe_redirect( admin_url( 'options-general.php?page=ai-wp-site-manager' ) );
+	exit;
+}
+
+function aiwp_settings_page() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return;
+	}
+	$notice = get_transient( 'aiwp_notice_' . get_current_user_id() );
+	if ( $notice ) {
+		delete_transient( 'aiwp_notice_' . get_current_user_id() );
+	}
+	echo '<div class="wrap"><h1>AI Site Manager</h1>';
+	echo '<p>Version ' . esc_html( CSM_VERSION ) . '. Edits the files below directly in the web root, so what you see here is exactly what crawlers and AI agents receive. Each save keeps the previous version for a one-click restore.</p>';
+	if ( $notice ) {
+		$class = 'error' === $notice['status'] ? 'notice-error' : 'notice-success';
+		$text  = 'error' === $notice['status'] ? $notice['message'] : ucfirst( $notice['status'] ) . ' ' . $notice['file'] . '.';
+		echo '<div class="notice ' . esc_attr( $class ) . ' is-dismissible"><p>' . esc_html( $text ) . '</p></div>';
+	}
+	$help = array(
+		'llms.txt'   => 'Markdown for AI agents: an H1 with the site name, a one-paragraph summary in a blockquote, then H2 sections with lists of links and one-line descriptions. Keep it short and current.',
+		'robots.txt' => 'Crawler access rules. Name AI crawlers explicitly (GPTBot, ClaudeBot, Google-Extended for training; OAI-SearchBot, Claude-SearchBot, PerplexityBot for AI search; ChatGPT-User, Claude-User for on-demand fetches). Keep the Sitemap line.',
+	);
+	foreach ( aiwp_root_file_names() as $name ) {
+		$info = aiwp_root_file_info( $name );
+		echo '<h2 style="margin-top:2em"><code>/' . esc_html( $name ) . '</code></h2>';
+		echo '<p class="description">' . esc_html( $help[ $name ] ) . '</p>';
+		echo '<p><strong>File:</strong> <code>' . esc_html( $info['path'] ) . '</code> &middot; ';
+		if ( $info['exists'] ) {
+			echo esc_html( size_format( $info['size'] ) ) . ', last modified ' . esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', strtotime( $info['modified'] ) ), 'Y-m-d H:i' ) ) . ' &middot; ';
+		} else {
+			echo 'does not exist yet' . ( 'robots.txt' === $name ? ' (WordPress is generating a default one; saving creates a real file)' : '' ) . ' &middot; ';
+		}
+		echo '<a href="' . esc_url( $info['url'] ) . '" target="_blank" rel="noopener">open ' . esc_html( $info['url'] ) . '</a></p>';
+		if ( 'robots.txt' === $name ) {
+			foreach ( aiwp_robots_warnings( $info['content'] ) as $w ) {
+				echo '<div class="notice notice-warning inline"><p>' . esc_html( $w ) . '</p></div>';
+			}
+		}
+		if ( ! $info['writable'] ) {
+			echo '<div class="notice notice-error inline"><p>This file is not writable by WordPress. Fix permissions on the web root, or upload the content by FTP.</p></div>';
+		}
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+		wp_nonce_field( 'aiwp_rootfile_' . $name );
+		echo '<input type="hidden" name="action" value="aiwp_save_rootfile"><input type="hidden" name="aiwp_file" value="' . esc_attr( $name ) . '">';
+		echo '<textarea name="aiwp_content" rows="18" style="width:100%;max-width:900px;font-family:monospace" spellcheck="false"' . ( $info['writable'] ? '' : ' readonly' ) . '>' . esc_textarea( $info['content'] ) . '</textarea>';
+		echo '<p>';
+		if ( $info['writable'] ) {
+			echo '<button type="submit" name="aiwp_action" value="save" class="button button-primary">Save ' . esc_html( $name ) . '</button> ';
+			if ( $info['previous'] ) {
+				echo '<button type="submit" name="aiwp_action" value="restore" class="button" onclick="return confirm(' . esc_attr( wp_json_encode( 'Replace the current file with the version saved ' . $info['previous'] . '?' ) ) . ')">Restore previous version (' . esc_html( $info['previous'] ) . ')</button>';
+			}
+		}
+		echo '</p></form>';
+	}
+	echo '<h2 style="margin-top:2em">Content includes</h2><p class="description">Write <code>{INCLUDE:/some/path/}</code> in any page or post to insert the HTML that same-site URL returns (cached ' . esc_html( AIWP_INCLUDE_TTL / 60 ) . ' minutes).</p>';
+	echo '</div>';
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.2.1' );
+define( 'CSM_VERSION', '1.3.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.0
+- Settings -> AI Site Manager: edit the physical llms.txt and robots.txt in the web root, with previous-version restore and a warning for site-wide Disallow rules.
+- REST: GET/POST ai-wp/v1/rootfiles/<name> and POST .../restore (Administrators).
+
 ## 1.2.1
 - Purge LiteSpeed cache also when the plugin is re-uploaded as a zip over an existing copy.
 
