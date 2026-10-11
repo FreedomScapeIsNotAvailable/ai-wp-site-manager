@@ -57,6 +57,13 @@ Profile page's Application Passwords box. Settings -> AI Site Manager lists, cre
 the logged-in administrator's application passwords server-side, so the connector can be set up
 on such hosts too.
 
+## Redirects
+
+Settings -> AI Site Manager has a redirects box: one `/old-path/ -> /new-path/` per line, served as
+301 before WordPress routes the request. Query strings are preserved. WordPress core only
+redirects renamed posts, never pages, so renamed or deleted pages need an entry. Same list over
+REST: `GET|POST ai-wp/v1/redirects` with `{"text": "..."}`.
+
 ## Content includes
 
 Write `{INCLUDE:/pricepage/}` (or a full URL on the same host) anywhere in a page or post.

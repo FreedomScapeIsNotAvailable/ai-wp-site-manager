@@ -1,10 +1,10 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "changelog": "<h4>1.4.0</h4><ul><li>Settings page: list, create and revoke the current administrator's application passwords inside WordPress, for hosts whose firewall blocks /wp-json/wp/v2/users/.</li></ul>"
+  "changelog": "<h4>1.5.0</h4><ul><li>301 redirects: `/old/ -> /new/` lines in Settings -> AI Site Manager and at ai-wp/v1/redirects. Needed for renamed or removed pages, which WordPress core never redirects by itself.</li></ul>"
 }

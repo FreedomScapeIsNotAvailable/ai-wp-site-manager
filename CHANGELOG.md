@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.0
+- 301 redirects: `/old/ -> /new/` lines in Settings -> AI Site Manager and at ai-wp/v1/redirects. Needed for renamed or removed pages, which WordPress core never redirects by itself.
+
 ## 1.4.0
 - Settings page: list, create and revoke the current administrator's application passwords inside WordPress, for hosts whose firewall blocks /wp-json/wp/v2/users/.
 

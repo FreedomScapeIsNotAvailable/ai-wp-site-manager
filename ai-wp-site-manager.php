@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.4.0
+ * Version:           1.5.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -668,6 +668,7 @@ function aiwp_settings_page() {
 		echo '</p></form>';
 	}
 	aiwp_render_app_passwords_section( $notice );
+	aiwp_render_redirects_section();
 	echo '<h2 style="margin-top:2em">Content includes</h2><p class="description">Write <code>{INCLUDE:/some/path/}</code> in any page or post to insert the HTML that same-site URL returns (cached ' . esc_html( AIWP_INCLUDE_TTL / 60 ) . ' minutes).</p>';
 	echo '</div>';
 }
@@ -755,9 +756,163 @@ function aiwp_render_app_passwords_section( $notice ) {
 	echo '<button type="submit" class="button button-primary">Create</button></p></form>';
 }
 
+/* ------------------------------------------------------------------ redirects */
+
+/*
+ * Simple 301 redirects, one per line in Settings -> AI Site Manager:  /old-path/  ->  /new-path/
+ * Targets may be a path on this site or a full https URL. Matching ignores the trailing slash and
+ * the query string. WordPress core only auto-redirects renamed *posts*, never pages, so renamed or
+ * removed pages need an entry here to keep inbound links and search rankings.
+ * The same list is readable and writable at ai-wp/v1/redirects for the connector.
+ */
+function aiwp_get_redirects() {
+	$list = get_option( 'aiwp_redirects', array() );
+	return is_array( $list ) ? $list : array();
+}
+
+/** Parse "from -> to" lines into a normalised list; returns array( list, errors ). */
+function aiwp_parse_redirect_lines( $text ) {
+	$list   = array();
+	$errors = array();
+	foreach ( preg_split( '/\r\n|\r|\n/', (string) $text ) as $n => $line ) {
+		$line = trim( $line );
+		if ( '' === $line || 0 === strpos( $line, '#' ) ) {
+			continue;
+		}
+		if ( ! preg_match( '/^(\S+)\s*(?:->|=>|\s)\s*(\S+)$/', $line, $m ) ) {
+			$errors[] = 'Line ' . ( $n + 1 ) . ': expected "/old/ -> /new/".';
+			continue;
+		}
+		$from = aiwp_normalize_path( $m[1] );
+		$to   = $m[2];
+		if ( null === $from || '/' === $from ) {
+			$errors[] = 'Line ' . ( $n + 1 ) . ': the source must be a path on this site, not the homepage.';
+			continue;
+		}
+		if ( ! preg_match( '#^(/|https://)#', $to ) ) {
+			$errors[] = 'Line ' . ( $n + 1 ) . ': the target must start with / or https://.';
+			continue;
+		}
+		if ( aiwp_normalize_path( $to ) === $from ) {
+			$errors[] = 'Line ' . ( $n + 1 ) . ': source and target are the same.';
+			continue;
+		}
+		$list[ $from ] = $to;
+	}
+	return array( $list, $errors );
+}
+
+/** "/Old-Path/?x=1" or a full URL on this host -> "/old-path"; null if on another host. */
+function aiwp_normalize_path( $value ) {
+	$value = trim( (string) $value );
+	if ( preg_match( '#^https?://#i', $value ) ) {
+		$host = wp_parse_url( $value, PHP_URL_HOST );
+		$home = wp_parse_url( home_url(), PHP_URL_HOST );
+		if ( strtolower( (string) $host ) !== strtolower( (string) $home ) ) {
+			return null;
+		}
+		$value = (string) wp_parse_url( $value, PHP_URL_PATH );
+	}
+	$value = strtok( $value, '?#' );
+	$value = '/' . trim( rawurldecode( $value ), '/' );
+	return strtolower( $value );
+}
+
+function aiwp_redirects_to_text( $list ) {
+	$lines = array();
+	foreach ( $list as $from => $to ) {
+		$lines[] = $from . '/ -> ' . $to;
+	}
+	return implode( "\n", $lines );
+}
+
+add_action( 'template_redirect', 'aiwp_apply_redirects', 1 );
+function aiwp_apply_redirects() {
+	$list = aiwp_get_redirects();
+	if ( ! $list || empty( $_SERVER['REQUEST_URI'] ) ) {
+		return;
+	}
+	$path = aiwp_normalize_path( home_url( wp_unslash( $_SERVER['REQUEST_URI'] ) ) );
+	if ( null === $path || ! isset( $list[ $path ] ) ) {
+		return;
+	}
+	$to = $list[ $path ];
+	if ( 0 === strpos( $to, '/' ) ) {
+		$to = home_url( $to );
+	}
+	// Preserve the query string so tracking parameters survive the hop.
+	$query = wp_parse_url( wp_unslash( $_SERVER['REQUEST_URI'] ), PHP_URL_QUERY );
+	if ( $query && false === strpos( $to, '?' ) ) {
+		$to .= '?' . $query;
+	}
+	do_action( 'litespeed_control_set_nocache', 'ai-wp-site-manager redirect' );
+	wp_redirect( $to, 301, 'AI WP Site Manager' );
+	exit;
+}
+
+function aiwp_save_redirects_text( $text ) {
+	list( $list, $errors ) = aiwp_parse_redirect_lines( $text );
+	if ( $errors ) {
+		return new WP_Error( 'aiwp_bad_redirects', implode( ' ', $errors ), array( 'status' => 400 ) );
+	}
+	update_option( 'aiwp_redirects', $list, false );
+	do_action( 'litespeed_purge_all' );
+	return $list;
+}
+
+add_action( 'rest_api_init', 'aiwp_register_redirect_routes' );
+function aiwp_register_redirect_routes() {
+	$can = function () {
+		return current_user_can( 'manage_options' );
+	};
+	register_rest_route( 'ai-wp/v1', '/redirects', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $can,
+			'callback'            => function () {
+				return array( 'redirects' => aiwp_get_redirects(), 'text' => aiwp_redirects_to_text( aiwp_get_redirects() ) );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $can,
+			'args'                => array( 'text' => array( 'required' => true, 'type' => 'string' ) ),
+			'callback'            => function ( $req ) {
+				$res = aiwp_save_redirects_text( $req->get_param( 'text' ) );
+				return is_wp_error( $res ) ? $res : array( 'redirects' => $res, 'count' => count( $res ) );
+			},
+		),
+	) );
+}
+
+add_action( 'admin_post_aiwp_save_redirects', 'aiwp_handle_redirects_form' );
+function aiwp_handle_redirects_form() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( 'Not allowed.' );
+	}
+	check_admin_referer( 'aiwp_redirects' );
+	$res    = aiwp_save_redirects_text( isset( $_POST['aiwp_redirects'] ) ? wp_unslash( $_POST['aiwp_redirects'] ) : '' );
+	$notice = is_wp_error( $res )
+		? array( 'status' => 'error', 'file' => '', 'message' => $res->get_error_message() )
+		: array( 'status' => 'saved', 'file' => count( $res ) . ' redirect(s)', 'message' => '' );
+	set_transient( 'aiwp_notice_' . get_current_user_id(), $notice, 60 );
+	wp_safe_redirect( admin_url( 'options-general.php?page=ai-wp-site-manager#redirects' ) );
+	exit;
+}
+
+function aiwp_render_redirects_section() {
+	echo '<h2 id="redirects" style="margin-top:2em">Redirects (301)</h2>';
+	echo '<p class="description">One per line: <code>/old-path/ -> /new-path/</code>. Use this when a page is renamed or removed, so old links and search results keep working. WordPress only does this by itself for posts, not pages. Lines starting with # are comments.</p>';
+	echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+	wp_nonce_field( 'aiwp_redirects' );
+	echo '<input type="hidden" name="action" value="aiwp_save_redirects">';
+	echo '<textarea name="aiwp_redirects" rows="8" style="width:100%;max-width:900px;font-family:monospace" spellcheck="false" placeholder="/old-page/ -> /new-page/">' . esc_textarea( aiwp_redirects_to_text( aiwp_get_redirects() ) ) . '</textarea>';
+	echo '<p><button type="submit" class="button button-primary">Save redirects</button></p></form>';
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.4.0' );
+define( 'CSM_VERSION', '1.5.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
