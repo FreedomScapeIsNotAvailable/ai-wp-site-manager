@@ -1,10 +1,10 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "changelog": "<h4>1.2.0</h4><ul><li>Content includes: `{INCLUDE:/path/}` in a post or page is replaced with the HTML that same-site URL returns, cached 10 minutes, last good copy kept as fallback. LiteSpeed page TTL is lowered to match.</li></ul>"
+  "changelog": "<h4>1.2.1</h4><ul><li>Purge LiteSpeed cache also when the plugin is re-uploaded as a zip over an existing copy.</li></ul>"
 }

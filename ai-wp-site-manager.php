@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes from the site's own URLs. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.2.0
+ * Version:           1.2.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -53,7 +53,12 @@ function csm_purge_after_self_update( $upgrader, $hook_extra ) {
 		return;
 	}
 	$plugins = isset( $hook_extra['plugins'] ) ? (array) $hook_extra['plugins'] : array();
-	if ( in_array( plugin_basename( __FILE__ ), $plugins, true ) ) {
+	$mine    = in_array( plugin_basename( __FILE__ ), $plugins, true );
+	// A zip re-upload ("Replace current with uploaded") arrives as an install, not an update.
+	if ( ! $mine && isset( $upgrader->result['destination_name'] ) && 'ai-wp-site-manager' === $upgrader->result['destination_name'] ) {
+		$mine = true;
+	}
+	if ( $mine ) {
 		do_action( 'litespeed_purge_all' );
 	}
 }
@@ -452,7 +457,7 @@ function aiwp_fetch_include( $target, $ttl ) {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.2.0' );
+define( 'CSM_VERSION', '1.2.1' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
