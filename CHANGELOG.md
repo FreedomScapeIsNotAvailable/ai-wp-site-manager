@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2.0
+- Content includes: `{INCLUDE:/path/}` in a post or page is replaced with the HTML that same-site URL returns, cached 10 minutes, last good copy kept as fallback. LiteSpeed page TTL is lowered to match.
+
 ## 1.1.1
 - Send no-cache headers on all ai-wp/v1 responses so page caches (LiteSpeed, CDNs) never serve them publicly.
 - Purge LiteSpeed cache after the plugin updates or activates.

@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
- * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme install/switch/delete, which the core REST API does not provide. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.1.1
+ * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes from the site's own URLs. Used by the team's Claude WordPress connector. Updates itself from GitHub.
+ * Version:           1.2.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -388,9 +388,71 @@ function csm_delete_theme( WP_REST_Request $req ) {
 	return array( 'stylesheet' => $stylesheet, 'deleted' => true );
 }
 
+/* ------------------------------------------------------------------ content includes */
+
+/*
+ * {INCLUDE:/some/path/} or {INCLUDE:https://this-site.tld/some/path/} inside post/page content is
+ * replaced with the HTML that URL returns. Only URLs on this site's own host are allowed. The
+ * result is cached for AIWP_INCLUDE_TTL seconds (filter 'ai_wp_include_ttl'); if the fetch fails,
+ * the last good copy is used so a hiccup in the generating script never blanks the page.
+ * LiteSpeed's page cache TTL is lowered to the same value on pages that contain an include.
+ */
+define( 'AIWP_INCLUDE_TTL', 600 );
+
+add_filter( 'the_content', 'aiwp_render_includes', 20 );
+
+function aiwp_render_includes( $content ) {
+	if ( false === strpos( $content, '{INCLUDE:' ) ) {
+		return $content;
+	}
+	// Also swallow the <p> wrapper wpautop puts around a placeholder that stands alone on a line.
+	return preg_replace_callback(
+		'~(?:<p>\s*)?\{INCLUDE:([^}\s]+)\}(?:\s*</p>)?~',
+		function ( $m ) {
+			$ttl = (int) apply_filters( 'ai_wp_include_ttl', AIWP_INCLUDE_TTL, $m[1] );
+			do_action( 'litespeed_control_set_ttl', $ttl );
+			$html = aiwp_fetch_include( $m[1], $ttl );
+			return null === $html ? '<!-- include unavailable: ' . esc_html( $m[1] ) . ' -->' : $html;
+		},
+		$content
+	);
+}
+
+function aiwp_fetch_include( $target, $ttl ) {
+	$home = wp_parse_url( home_url() );
+	if ( 0 === strpos( $target, '/' ) ) {
+		$url = home_url( $target );
+	} else {
+		$url  = $target;
+		$host = wp_parse_url( $url, PHP_URL_HOST );
+		if ( ! $host || strtolower( $host ) !== strtolower( $home['host'] ) ) {
+			return null; // other hosts are not allowed
+		}
+	}
+	$key   = 'aiwp_inc_' . md5( $url );
+	$fresh = get_transient( $key );
+	if ( false !== $fresh ) {
+		return $fresh;
+	}
+	$response = wp_remote_get( $url, array(
+		'timeout'   => 15,
+		'sslverify' => true,
+		'headers'   => array( 'X-AIWP-Include' => '1', 'Cache-Control' => 'no-cache' ),
+	) );
+	$code = wp_remote_retrieve_response_code( $response );
+	if ( ! is_wp_error( $response ) && 200 === $code ) {
+		$html = wp_remote_retrieve_body( $response );
+		set_transient( $key, $html, max( 60, $ttl ) );
+		update_option( $key . '_last_good', $html, false );
+		return $html;
+	}
+	$stale = get_option( $key . '_last_good', null );
+	return is_string( $stale ) ? $stale : null;
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.1.1' );
+define( 'CSM_VERSION', '1.2.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

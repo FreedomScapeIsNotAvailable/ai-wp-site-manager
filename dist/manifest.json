@@ -1,10 +1,10 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "changelog": "<h4>1.1.1</h4><ul><li>Send no-cache headers on all ai-wp/v1 responses so page caches (LiteSpeed, CDNs) never serve them publicly.</li><li>Purge LiteSpeed cache after the plugin updates or activates.</li><li>The updates endpoint always re-reads the release manifest, so new releases show up immediately.</li></ul>"
+  "changelog": "<h4>1.2.0</h4><ul><li>Content includes: `{INCLUDE:/path/}` in a post or page is replaced with the HTML that same-site URL returns, cached 10 minutes, last good copy kept as fallback. LiteSpeed page TTL is lowered to match.</li></ul>"
 }

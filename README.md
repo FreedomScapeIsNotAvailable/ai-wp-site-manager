@@ -41,6 +41,14 @@ All under `/wp-json/ai-wp/v1/`, JSON in and out, authenticated with an Applicati
 Hosts that need FTP credentials for updates (filesystem method is not `direct`) get a clear
 error. Add `define('FS_METHOD', 'direct');` to `wp-config.php` or fix file ownership.
 
+## Content includes
+
+Write `{INCLUDE:/pricepage/}` (or a full URL on the same host) anywhere in a page or post.
+On display it is replaced with the HTML that URL returns, so a script elsewhere on the site
+can generate part of a page. Results are cached for 10 minutes (`ai_wp_include_ttl` filter);
+if the URL fails, the last successful copy is shown. Other hosts are refused. On LiteSpeed
+Cache sites the page's cache lifetime is lowered to the same 10 minutes.
+
 ## How self-update works
 
 The plugin header declares `Update URI: https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager`.
