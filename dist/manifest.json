@@ -1,0 +1,10 @@
+{
+  "name": "Claude Site Manager",
+  "slug": "claude-site-manager",
+  "version": "1.1.0",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/claude-site-manager/main/dist/claude-site-manager.zip",
+  "requires": "5.8",
+  "requires_php": "7.4",
+  "tested": "",
+  "changelog": "<h4>1.1.0</h4><ul><li>Self-update from this repository via the WordPress Update URI mechanism.</li><li>Installable as a normal plugin (zip upload) as well as a must-use plugin.</li></ul>"
+}
