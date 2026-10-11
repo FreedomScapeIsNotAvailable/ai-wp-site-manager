@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.0
+- POST themes/install-package and plugins/install-package: install or replace a theme/plugin from a zip under the team release location on GitHub (other URLs are refused). Lets the connector put the BOCP theme on a new site without a manual upload.
+
 ## 1.5.1
 - The updates endpoint fires the ai_wp_before_update_check action so self-updating themes (e.g. the BOCP theme) refresh their release manifest immediately.
 

@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.5.1
+ * Version:           1.6.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -911,9 +911,114 @@ function aiwp_render_redirects_section() {
 	echo '<p><button type="submit" class="button button-primary">Save redirects</button></p></form>';
 }
 
+/* ------------------------------------------------------------------ install from the team's own release zips */
+
+/*
+ * POST ai-wp/v1/themes/install-package  {package, overwrite}
+ * POST ai-wp/v1/plugins/install-package {package, overwrite, activate}
+ * Installs (or, with overwrite, replaces) a theme or plugin from a zip URL. Only URLs under the
+ * team's own GitHub release location are accepted, so this cannot be pointed at arbitrary code.
+ * Needed because an inactive theme cannot self-update (its code never runs), so a freshly
+ * uploaded old version has no way to reach the current release without a manual re-upload.
+ */
+define( 'AIWP_PACKAGE_PREFIXES', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/' );
+
+function aiwp_package_allowed( $url ) {
+	foreach ( explode( ',', AIWP_PACKAGE_PREFIXES ) as $prefix ) {
+		if ( 0 === strpos( (string) $url, trim( $prefix ) ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+add_action( 'rest_api_init', 'aiwp_register_install_package_routes' );
+function aiwp_register_install_package_routes() {
+	register_rest_route( 'ai-wp/v1', '/themes/install-package', array(
+		'methods'             => 'POST',
+		'callback'            => 'aiwp_install_theme_package',
+		'permission_callback' => function () {
+			return current_user_can( 'install_themes' ) && current_user_can( 'update_themes' );
+		},
+		'args'                => array(
+			'package'   => array( 'required' => true, 'type' => 'string' ),
+			'overwrite' => array( 'type' => 'boolean', 'default' => true ),
+		),
+	) );
+	register_rest_route( 'ai-wp/v1', '/plugins/install-package', array(
+		'methods'             => 'POST',
+		'callback'            => 'aiwp_install_plugin_package',
+		'permission_callback' => function () {
+			return current_user_can( 'install_plugins' ) && current_user_can( 'update_plugins' );
+		},
+		'args'                => array(
+			'package'   => array( 'required' => true, 'type' => 'string' ),
+			'overwrite' => array( 'type' => 'boolean', 'default' => true ),
+			'activate'  => array( 'type' => 'boolean', 'default' => false ),
+		),
+	) );
+}
+
+function aiwp_install_theme_package( WP_REST_Request $req ) {
+	$fs = csm_require_direct_fs();
+	if ( is_wp_error( $fs ) ) {
+		return $fs;
+	}
+	$package = esc_url_raw( $req->get_param( 'package' ) );
+	if ( ! aiwp_package_allowed( $package ) ) {
+		return new WP_Error( 'aiwp_package_not_allowed', 'Only packages from the team release location are allowed.', array( 'status' => 403 ) );
+	}
+	$skin     = new WP_Ajax_Upgrader_Skin();
+	$upgrader = new Theme_Upgrader( $skin );
+	$result   = $upgrader->install( $package, array( 'overwrite_package' => (bool) $req->get_param( 'overwrite' ) ) );
+	if ( is_wp_error( $result ) || is_wp_error( $skin->result ) || $skin->get_errors()->has_errors() || ! $result ) {
+		return csm_skin_error( $skin, 'Theme package install failed.' );
+	}
+	wp_clean_themes_cache( true );
+	$stylesheet = isset( $upgrader->result['destination_name'] ) ? $upgrader->result['destination_name'] : '';
+	$theme      = $stylesheet ? wp_get_theme( $stylesheet ) : null;
+	return array(
+		'stylesheet' => $stylesheet,
+		'name'       => $theme ? $theme->get( 'Name' ) : null,
+		'version'    => $theme ? $theme->get( 'Version' ) : null,
+		'active'     => get_stylesheet() === $stylesheet,
+		'log'        => $skin->get_upgrade_messages(),
+	);
+}
+
+function aiwp_install_plugin_package( WP_REST_Request $req ) {
+	$fs = csm_require_direct_fs();
+	if ( is_wp_error( $fs ) ) {
+		return $fs;
+	}
+	$package = esc_url_raw( $req->get_param( 'package' ) );
+	if ( ! aiwp_package_allowed( $package ) ) {
+		return new WP_Error( 'aiwp_package_not_allowed', 'Only packages from the team release location are allowed.', array( 'status' => 403 ) );
+	}
+	$skin     = new WP_Ajax_Upgrader_Skin();
+	$upgrader = new Plugin_Upgrader( $skin );
+	$result   = $upgrader->install( $package, array( 'overwrite_package' => (bool) $req->get_param( 'overwrite' ) ) );
+	if ( is_wp_error( $result ) || is_wp_error( $skin->result ) || $skin->get_errors()->has_errors() || ! $result ) {
+		return csm_skin_error( $skin, 'Plugin package install failed.' );
+	}
+	wp_clean_plugins_cache( true );
+	$file = $upgrader->plugin_info();
+	if ( $file && $req->get_param( 'activate' ) && ! is_plugin_active( $file ) ) {
+		activate_plugin( $file );
+	}
+	$data = $file ? get_plugin_data( WP_PLUGIN_DIR . '/' . $file, false, false ) : array();
+	return array(
+		'plugin'  => $file ? csm_plugin_id( $file ) : null,
+		'name'    => isset( $data['Name'] ) ? $data['Name'] : null,
+		'version' => isset( $data['Version'] ) ? $data['Version'] : null,
+		'active'  => $file ? is_plugin_active( $file ) : false,
+		'log'     => $skin->get_upgrade_messages(),
+	);
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.5.1' );
+define( 'CSM_VERSION', '1.6.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
