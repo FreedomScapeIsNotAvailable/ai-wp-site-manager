@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.1
+- GET/POST ai-wp/v1/theme-mods: read and set the active theme's Customizer settings (logo, colours, header buttons) remotely, so a theme switch can be completed in one go.
+
 ## 1.6.0
 - POST themes/install-package and plugins/install-package: install or replace a theme/plugin from a zip under the team release location on GitHub (other URLs are refused). Lets the connector put the BOCP theme on a new site without a manual upload.
 

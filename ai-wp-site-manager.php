@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.6.0
+ * Version:           1.6.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -1016,9 +1016,59 @@ function aiwp_install_plugin_package( WP_REST_Request $req ) {
 	);
 }
 
+/* ------------------------------------------------------------------ theme mods (Customizer settings) */
+
+/*
+ * GET  ai-wp/v1/theme-mods            -> all Customizer settings of the active theme
+ * POST ai-wp/v1/theme-mods {mods}     -> set the given keys (custom_logo, colours, header buttons, ...)
+ * Scoped to theme mods only (what Appearance -> Customize edits), capability edit_theme_options.
+ * Lets a theme switch be completed remotely: logo, header buttons and colours in one call.
+ */
+add_action( 'rest_api_init', 'aiwp_register_theme_mod_routes' );
+function aiwp_register_theme_mod_routes() {
+	$can = function () {
+		return current_user_can( 'edit_theme_options' );
+	};
+	register_rest_route( 'ai-wp/v1', '/theme-mods', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $can,
+			'callback'            => function () {
+				return array( 'theme' => get_stylesheet(), 'mods' => get_theme_mods() );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $can,
+			'args'                => array( 'mods' => array( 'required' => true, 'type' => 'object' ) ),
+			'callback'            => function ( $req ) {
+				$mods = $req->get_param( 'mods' );
+				if ( ! is_array( $mods ) ) {
+					return new WP_Error( 'aiwp_bad_mods', '"mods" must be an object of setting => value.', array( 'status' => 400 ) );
+				}
+				$changed = array();
+				foreach ( $mods as $key => $value ) {
+					$key = sanitize_key( $key );
+					if ( '' === $key ) {
+						continue;
+					}
+					if ( null === $value ) {
+						remove_theme_mod( $key );
+					} else {
+						set_theme_mod( $key, $value );
+					}
+					$changed[ $key ] = get_theme_mod( $key );
+				}
+				do_action( 'litespeed_purge_all' );
+				return array( 'theme' => get_stylesheet(), 'changed' => $changed );
+			},
+		),
+	) );
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.6.0' );
+define( 'CSM_VERSION', '1.6.1' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

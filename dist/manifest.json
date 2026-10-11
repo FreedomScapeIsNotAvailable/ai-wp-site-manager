@@ -1,10 +1,10 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "changelog": "<h4>1.6.0</h4><ul><li>POST themes/install-package and plugins/install-package: install or replace a theme/plugin from a zip under the team release location on GitHub (other URLs are refused). Lets the connector put the BOCP theme on a new site without a manual upload.</li></ul>"
+  "changelog": "<h4>1.6.1</h4><ul><li>GET/POST ai-wp/v1/theme-mods: read and set the active theme's Customizer settings (logo, colours, header buttons) remotely, so a theme switch can be completed in one go.</li></ul>"
 }
