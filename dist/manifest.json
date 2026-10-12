@@ -1,10 +1,11 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.7.0",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.7.0.zip",
+  "version": "1.7.1",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.7.1.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "changelog": "<h4>1.7.0</h4><ul><li>Content includes may read from the team's own sites (bocp.ro, cloudsales.ro; filter ai_wp_include_hosts), so one price script can feed several sites.</li></ul>"
+  "sha256": "3700819ff54e7019513f521a189e1d8f6c6f42666745c73741862b35a70e1a4c",
+  "changelog": "<h4>1.7.1</h4><ul><li>Security: content includes no longer expand inside a request made by an include (a page including itself could exhaust the server), are limited to 5 per page, follow no redirects, need HTTPS and are capped at 2 MB. HTML from authors without unfiltered_html goes through wp_kses_post, so an Author can no longer use an include to run a script on the site; the permanent last-good copy is kept only for trusted authors.</li><li>Security: install-package accepts only exact release zips (raw.githubusercontent.com, FreedomScapeIsNotAvailable/wp-theme-bocp or ai-wp-site-manager, main/dist/..., .zip); \"..\" segments, other accounts, query strings and ports are refused (filter ai_wp_package_allowed).</li><li>Security: the release manifest carries a sha256 of the zip, and the update is refused when the downloaded zip does not match.</li></ul>"
 }

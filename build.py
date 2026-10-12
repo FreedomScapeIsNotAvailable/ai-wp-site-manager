@@ -10,6 +10,7 @@ Release procedure:
 WordPress sites pick the new version up within six hours (or immediately via
 Dashboard -> Updates -> "Check again", or the connector's check_updates tool).
 """
+import hashlib
 import json
 import re
 import zipfile
@@ -59,6 +60,7 @@ manifest = {
     "requires": header("Requires at least", "5.8"),
     "requires_php": header("Requires PHP", "7.4"),
     "tested": header("Tested up to", ""),
+    "sha256": hashlib.sha256(versioned.read_bytes()).hexdigest(),  # verified by the updater before the zip is unpacked
     "changelog": changelog,
 }
 (DIST / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

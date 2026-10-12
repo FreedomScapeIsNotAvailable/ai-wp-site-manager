@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.7.0
+ * Version:           1.7.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -415,18 +415,39 @@ define( 'AIWP_INCLUDE_TTL', 600 );
 
 add_filter( 'the_content', 'aiwp_render_includes', 20 );
 
+/** Most includes expanded in one piece of content; the rest are dropped. */
+define( 'AIWP_INCLUDE_MAX', 5 );
+
 function aiwp_render_includes( $content ) {
 	if ( false === strpos( $content, '{INCLUDE:' ) ) {
 		return $content;
 	}
+	$pattern = '~(?:<p>\s*)?\{INCLUDE:([^}\s]+)\}(?:\s*</p>)?~';
+	// A request made by an include must never expand includes itself, otherwise a page that includes itself
+	// would make the server request itself until every PHP worker is busy.
+	if ( ! empty( $_SERVER['HTTP_X_AIWP_INCLUDE'] ) ) {
+		return preg_replace( $pattern, '', $content );
+	}
+	// Includes are raw HTML: only authors who may post unfiltered HTML get it unfiltered. For everyone else the
+	// fetched HTML goes through wp_kses_post, so an Author cannot use an include to put a script on the site.
+	$post    = get_post();
+	$author  = $post ? (int) $post->post_author : 0;
+	$trusted = $author && user_can( $author, 'unfiltered_html' );
+	$count   = 0;
 	// Also swallow the <p> wrapper wpautop puts around a placeholder that stands alone on a line.
 	return preg_replace_callback(
-		'~(?:<p>\s*)?\{INCLUDE:([^}\s]+)\}(?:\s*</p>)?~',
-		function ( $m ) {
+		$pattern,
+		function ( $m ) use ( $trusted, &$count ) {
+			if ( ++$count > AIWP_INCLUDE_MAX ) {
+				return '';
+			}
 			$ttl = (int) apply_filters( 'ai_wp_include_ttl', AIWP_INCLUDE_TTL, $m[1] );
 			do_action( 'litespeed_control_set_ttl', $ttl );
-			$html = aiwp_fetch_include( $m[1], $ttl );
-			return null === $html ? '<!-- include unavailable: ' . esc_html( $m[1] ) . ' -->' : $html;
+			$html = aiwp_fetch_include( $m[1], $ttl, $trusted );
+			if ( null === $html ) {
+				return '<!-- include unavailable: ' . esc_html( $m[1] ) . ' -->';
+			}
+			return $trusted ? $html : wp_kses_post( $html );
 		},
 		$content
 	);
@@ -440,15 +461,15 @@ function aiwp_include_allowed_hosts() {
 	return array_values( array_unique( array_filter( array_map( 'strtolower', apply_filters( 'ai_wp_include_hosts', $hosts ) ) ) ) );
 }
 
-function aiwp_fetch_include( $target, $ttl ) {
-	$home = wp_parse_url( home_url() );
+function aiwp_fetch_include( $target, $ttl, $trusted = false ) {
 	if ( 0 === strpos( $target, '/' ) ) {
 		$url = home_url( $target );
 	} else {
-		$url  = $target;
-		$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
-		if ( ! $host || ! in_array( $host, aiwp_include_allowed_hosts(), true ) ) {
-			return null; // only this site and the team's own sites may be included
+		$url    = $target;
+		$host   = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+		$scheme = strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) );
+		if ( 'https' !== $scheme || ! $host || ! in_array( $host, aiwp_include_allowed_hosts(), true ) ) {
+			return null; // only this site and the team's own sites may be included, over HTTPS
 		}
 	}
 	$key   = 'aiwp_inc_' . md5( $url );
@@ -457,16 +478,23 @@ function aiwp_fetch_include( $target, $ttl ) {
 		return $fresh;
 	}
 	$response = wp_remote_get( $url, array(
-		'timeout'   => 15,
-		'sslverify' => true,
-		'headers'   => array( 'X-AIWP-Include' => '1', 'Cache-Control' => 'no-cache' ),
+		'timeout'             => 15,
+		'sslverify'           => true,
+		'redirection'         => 0, // an allowed host must not be able to send the request somewhere else
+		'limit_response_size' => 2 * MB_IN_BYTES,
+		'headers'             => array( 'X-AIWP-Include' => '1', 'Cache-Control' => 'no-cache' ),
 	) );
 	$code = wp_remote_retrieve_response_code( $response );
 	if ( ! is_wp_error( $response ) && 200 === $code ) {
 		$html = wp_remote_retrieve_body( $response );
 		set_transient( $key, $html, max( 60, $ttl ) );
-		update_option( $key . '_last_good', $html, false );
+		if ( $trusted ) { // the permanent last-good copy is only kept for includes written by trusted authors
+			update_option( $key . '_last_good', $html, false );
+		}
 		return $html;
+	}
+	if ( ! $trusted ) {
+		return null;
 	}
 	$stale = get_option( $key . '_last_good', null );
 	return is_string( $stale ) ? $stale : null;
@@ -929,15 +957,23 @@ function aiwp_render_redirects_section() {
  * Needed because an inactive theme cannot self-update (its code never runs), so a freshly
  * uploaded old version has no way to reach the current release without a manual re-upload.
  */
-define( 'AIWP_PACKAGE_PREFIXES', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/' );
+define( 'AIWP_PACKAGE_PREFIXES', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/' ); // informational; the check below parses the URL
 
+/**
+ * Exact check, not a string prefix: https, raw.githubusercontent.com, no port, query or credentials, and a path that is one
+ * of the team's release zips (<repo>/main/dist/[children/]<name>.zip). A prefix check let "..", look-alike paths and
+ * other accounts through. Extend with the ai_wp_package_allowed filter.
+ */
 function aiwp_package_allowed( $url ) {
-	foreach ( explode( ',', AIWP_PACKAGE_PREFIXES ) as $prefix ) {
-		if ( 0 === strpos( (string) $url, trim( $prefix ) ) ) {
-			return true;
-		}
-	}
-	return false;
+	$p = wp_parse_url( (string) $url );
+	$ok = is_array( $p )
+		&& isset( $p['scheme'], $p['host'], $p['path'] )
+		&& 'https' === strtolower( $p['scheme'] )
+		&& 'raw.githubusercontent.com' === strtolower( $p['host'] )
+		&& empty( $p['port'] ) && empty( $p['user'] ) && empty( $p['pass'] ) && empty( $p['query'] ) && empty( $p['fragment'] )
+		&& 1 === preg_match( '~^/FreedomScapeIsNotAvailable/(wp-theme-bocp|ai-wp-site-manager)/main/dist/(children/)?[A-Za-z0-9._-]+\.zip$~', $p['path'] )
+		&& false === strpos( $p['path'], '..' );
+	return (bool) apply_filters( 'ai_wp_package_allowed', $ok, $url );
 }
 
 add_action( 'rest_api_init', 'aiwp_register_install_package_routes' );
@@ -1076,7 +1112,7 @@ function aiwp_register_theme_mod_routes() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.7.0' );
+define( 'CSM_VERSION', '1.7.1' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
@@ -1124,8 +1160,39 @@ function csm_fetch_manifest( $force = false ) {
 	if ( 0 !== strpos( $manifest['package'], 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/' ) ) {
 		return false;
 	}
+	if ( isset( $manifest['sha256'] ) && ! preg_match( '/^[a-f0-9]{64}$/i', (string) $manifest['sha256'] ) ) {
+		return false; // a malformed checksum is never trusted
+	}
 	set_site_transient( 'csm_update_manifest', $manifest, 6 * HOUR_IN_SECONDS );
 	return $manifest;
+}
+
+/**
+ * Verify the release zip against the sha256 in the manifest before WordPress unpacks it. A manifest without a checksum
+ * (older releases) is accepted as before. This does not protect against an attacker who controls both the manifest and the
+ * zip; it protects against a corrupted or swapped zip, and makes a tampered release visible in the repository history.
+ */
+add_filter( 'upgrader_pre_download', 'csm_verify_package_hash', 10, 2 );
+function csm_verify_package_hash( $reply, $package ) {
+	if ( false !== $reply || ! is_string( $package ) ) {
+		return $reply;
+	}
+	$manifest = csm_fetch_manifest();
+	if ( ! $manifest || empty( $manifest['sha256'] ) || $package !== $manifest['package'] ) {
+		return $reply;
+	}
+	if ( ! function_exists( 'download_url' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+	}
+	$file = download_url( $package, 300 );
+	if ( is_wp_error( $file ) ) {
+		return $file;
+	}
+	if ( ! hash_equals( strtolower( (string) $manifest['sha256'] ), hash_file( 'sha256', $file ) ) ) {
+		wp_delete_file( $file );
+		return new WP_Error( 'csm_package_checksum', 'The downloaded package does not match the checksum in the release manifest; update refused.' );
+	}
+	return $file;
 }
 
 function csm_check_update( $update, $plugin_data, $plugin_file, $locales ) {

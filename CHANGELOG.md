@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.1
+- Security: content includes no longer expand inside a request made by an include (a page including itself could exhaust the server), are limited to 5 per page, follow no redirects, need HTTPS and are capped at 2 MB. HTML from authors without unfiltered_html goes through wp_kses_post, so an Author can no longer use an include to run a script on the site; the permanent last-good copy is kept only for trusted authors.
+- Security: install-package accepts only exact release zips (raw.githubusercontent.com, FreedomScapeIsNotAvailable/wp-theme-bocp or ai-wp-site-manager, main/dist/..., .zip); ".." segments, other accounts, query strings and ports are refused (filter ai_wp_package_allowed).
+- Security: the release manifest carries a sha256 of the zip, and the update is refused when the downloaded zip does not match.
+
 ## 1.7.0
 - Content includes may read from the team's own sites (bocp.ro, cloudsales.ro; filter ai_wp_include_hosts), so one price script can feed several sites.
 
