@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.8.0
+- GET/POST ai-wp/v1/auto-updates: read and switch WordPress's automatic updates for plugins, themes and core ("all", "none" or per item; core "all", "minor" or "off"), the same options as the Plugins, Themes and Updates screens. The reply also reports constants or filters that would block them.
+
 ## 1.7.1
 - Security: content includes no longer expand inside a request made by an include (a page including itself could exhaust the server), are limited to 5 per page, follow no redirects, need HTTPS and are capped at 2 MB. HTML from authors without unfiltered_html goes through wp_kses_post, so an Author can no longer use an include to run a script on the site; the permanent last-good copy is kept only for trusted authors.
 - Security: install-package accepts only exact release zips (raw.githubusercontent.com, FreedomScapeIsNotAvailable/wp-theme-bocp or ai-wp-site-manager, main/dist/..., .zip); ".." segments, other accounts, query strings and ports are refused (filter ai_wp_package_allowed).

@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.7.1
+ * Version:           1.8.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -1110,9 +1110,151 @@ function aiwp_register_theme_mod_routes() {
 	) );
 }
 
+/* ------------------------------------------------------------------ automatic updates */
+
+/*
+ * GET  ai-wp/v1/auto-updates  -> which plugins, themes and core versions WordPress updates on its own
+ * POST ai-wp/v1/auto-updates  {plugins, themes, core}
+ *   plugins / themes: "all" | "none" | { "<plugin file or stylesheet>": true|false }
+ *   core:             "all" (major + minor) | "minor" (security releases only) | "off"
+ * Writes the same options as the "Enable auto-updates" links on the Plugins and Themes screens
+ * and the toggle on Dashboard -> Updates. "all" covers what is installed now; a plugin or theme
+ * installed later is opted in by calling it again. Each part needs its own capability.
+ */
+add_action( 'rest_api_init', 'aiwp_register_auto_update_routes' );
+function aiwp_register_auto_update_routes() {
+	register_rest_route( 'ai-wp/v1', '/auto-updates', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => function () {
+				return current_user_can( 'update_plugins' ) || current_user_can( 'update_themes' ) || current_user_can( 'update_core' );
+			},
+			'callback'            => 'aiwp_auto_update_state',
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => function () {
+				return current_user_can( 'update_plugins' ) || current_user_can( 'update_themes' ) || current_user_can( 'update_core' );
+			},
+			'callback'            => 'aiwp_set_auto_updates',
+		),
+	) );
+}
+
+function aiwp_auto_update_state() {
+	if ( ! function_exists( 'get_plugins' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+	}
+	if ( ! function_exists( 'wp_is_auto_update_enabled_for_type' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/update.php';
+	}
+	if ( ! class_exists( 'WP_Automatic_Updater' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/class-wp-automatic-updater.php';
+	}
+	$on_plugins = (array) get_site_option( 'auto_update_plugins', array() );
+	$on_themes  = (array) get_site_option( 'auto_update_themes', array() );
+
+	$plugins = array();
+	foreach ( get_plugins() as $file => $data ) {
+		$plugins[] = array( 'plugin' => $file, 'name' => $data['Name'], 'auto_update' => in_array( $file, $on_plugins, true ) );
+	}
+	$themes = array();
+	foreach ( wp_get_themes() as $slug => $theme ) {
+		$themes[] = array( 'stylesheet' => $slug, 'name' => $theme->get( 'Name' ), 'auto_update' => in_array( $slug, $on_themes, true ) );
+	}
+
+	$updater = new WP_Automatic_Updater();
+	return array(
+		'plugins'                     => $plugins,
+		'themes'                      => $themes,
+		'core'                        => array(
+			'major' => 'enabled' === get_site_option( 'auto_update_core_major' ),
+			'minor' => 'unset' !== get_site_option( 'auto_update_core_minor', 'enabled' ),
+		),
+		// Constants or filters can override the options above; report them so "enabled" is not a false promise.
+		'automatic_updater_disabled'  => $updater->is_disabled(),
+		'wp_auto_update_core'         => defined( 'WP_AUTO_UPDATE_CORE' ) ? WP_AUTO_UPDATE_CORE : null,
+		'plugin_auto_updates_allowed' => wp_is_auto_update_enabled_for_type( 'plugin' ),
+		'theme_auto_updates_allowed'  => wp_is_auto_update_enabled_for_type( 'theme' ),
+	);
+}
+
+/** Resolve "all" | "none" | {id: bool} against the ids installed now. */
+function aiwp_auto_update_list( $wanted, $current, $installed ) {
+	if ( 'all' === $wanted ) {
+		return array_values( $installed );
+	}
+	if ( 'none' === $wanted ) {
+		return array();
+	}
+	if ( ! is_array( $wanted ) ) {
+		return new WP_Error( 'aiwp_bad_auto_update', 'Use "all", "none" or an object of id => true|false.', array( 'status' => 400 ) );
+	}
+	$list = array_intersect( $current, $installed );
+	foreach ( $wanted as $id => $on ) {
+		if ( ! in_array( $id, $installed, true ) ) {
+			return new WP_Error( 'aiwp_unknown_item', "Not installed: $id", array( 'status' => 404 ) );
+		}
+		$list = $on ? array_merge( $list, array( $id ) ) : array_diff( $list, array( $id ) );
+	}
+	return array_values( array_unique( $list ) );
+}
+
+function aiwp_set_auto_updates( WP_REST_Request $req ) {
+	if ( ! function_exists( 'get_plugins' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+	}
+	$plugins = $req->get_param( 'plugins' );
+	$themes  = $req->get_param( 'themes' );
+	$core    = $req->get_param( 'core' );
+	if ( null === $plugins && null === $themes && null === $core ) {
+		return new WP_Error( 'aiwp_nothing_to_do', 'Send at least one of "plugins", "themes" or "core".', array( 'status' => 400 ) );
+	}
+
+	if ( null !== $plugins ) {
+		if ( ! current_user_can( 'update_plugins' ) ) {
+			return new WP_Error( 'rest_forbidden', 'Changing plugin auto-updates needs update_plugins.', array( 'status' => 403 ) );
+		}
+		$list = aiwp_auto_update_list( $plugins, (array) get_site_option( 'auto_update_plugins', array() ), array_keys( get_plugins() ) );
+		if ( is_wp_error( $list ) ) {
+			return $list;
+		}
+		update_site_option( 'auto_update_plugins', $list );
+	}
+
+	if ( null !== $themes ) {
+		if ( ! current_user_can( 'update_themes' ) ) {
+			return new WP_Error( 'rest_forbidden', 'Changing theme auto-updates needs update_themes.', array( 'status' => 403 ) );
+		}
+		$list = aiwp_auto_update_list( $themes, (array) get_site_option( 'auto_update_themes', array() ), array_keys( wp_get_themes() ) );
+		if ( is_wp_error( $list ) ) {
+			return $list;
+		}
+		update_site_option( 'auto_update_themes', $list );
+	}
+
+	if ( null !== $core ) {
+		if ( ! current_user_can( 'update_core' ) ) {
+			return new WP_Error( 'rest_forbidden', 'Changing core auto-updates needs update_core.', array( 'status' => 403 ) );
+		}
+		$modes = array(
+			'all'   => array( 'enabled', 'enabled' ),
+			'minor' => array( 'unset', 'enabled' ),
+			'off'   => array( 'unset', 'unset' ),
+		);
+		if ( ! isset( $modes[ $core ] ) ) {
+			return new WP_Error( 'aiwp_bad_core_mode', 'core must be "all", "minor" or "off".', array( 'status' => 400 ) );
+		}
+		update_site_option( 'auto_update_core_major', $modes[ $core ][0] );
+		update_site_option( 'auto_update_core_minor', $modes[ $core ][1] );
+	}
+
+	return aiwp_auto_update_state();
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.7.1' );
+define( 'CSM_VERSION', '1.8.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

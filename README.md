@@ -64,6 +64,24 @@ Settings -> AI Site Manager has a redirects box: one `/old-path/ -> /new-path/` 
 redirects renamed posts, never pages, so renamed or deleted pages need an entry. Same list over
 REST: `GET|POST ai-wp/v1/redirects` with `{"text": "..."}`.
 
+## Automatic updates
+
+`GET ai-wp/v1/auto-updates` lists every plugin and theme with its auto-update flag, plus whether
+WordPress updates itself for major and minor releases. It also reports anything that overrides
+those settings (`AUTOMATIC_UPDATER_DISABLED`, `WP_AUTO_UPDATE_CORE`, filters).
+
+`POST ai-wp/v1/auto-updates` switches them, writing the same options as the Plugins, Themes and
+Dashboard -> Updates screens:
+
+```json
+{"plugins": "all", "themes": "all", "core": "all"}
+```
+
+`plugins` and `themes` take `"all"`, `"none"` or `{"akismet/akismet.php": true}` per item. `core`
+takes `"all"` (major and minor), `"minor"` (security releases only) or `"off"`. `"all"` covers
+what is installed now; call it again after installing something new. Each part needs its
+capability: `update_plugins`, `update_themes` or `update_core`.
+
 ## Content includes
 
 Write `{INCLUDE:/pricepage/}` (or a full URL on the same host) anywhere in a page or post.
