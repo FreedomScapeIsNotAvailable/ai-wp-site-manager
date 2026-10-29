@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.8.0
+ * Version:           1.9.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -1252,9 +1252,78 @@ function aiwp_set_auto_updates( WP_REST_Request $req ) {
 	return aiwp_auto_update_state();
 }
 
+/* ------------------------------------------------------------------ additional CSS (Customizer) */
+
+/*
+ * GET  ai-wp/v1/custom-css[?stylesheet=bocp]        -> the site's Additional CSS for a theme (default: active)
+ * POST ai-wp/v1/custom-css {css, stylesheet?}       -> replace it
+ * The same storage as Appearance -> Customize -> Additional CSS (a custom_css post per theme), so it
+ * survives theme updates and can be prepared for an installed theme before switching to it.
+ */
+add_action( 'rest_api_init', 'aiwp_register_custom_css_routes' );
+function aiwp_register_custom_css_routes() {
+	$can = function () {
+		return current_user_can( 'edit_css' );
+	};
+	$theme_arg = array(
+		'type'              => 'string',
+		'sanitize_callback' => 'sanitize_text_field',
+	);
+	register_rest_route( 'ai-wp/v1', '/custom-css', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $can,
+			'args'                => array( 'stylesheet' => $theme_arg ),
+			'callback'            => function ( $req ) {
+				$stylesheet = aiwp_custom_css_theme( $req->get_param( 'stylesheet' ) );
+				if ( is_wp_error( $stylesheet ) ) {
+					return $stylesheet;
+				}
+				return array( 'stylesheet' => $stylesheet, 'css' => wp_get_custom_css( $stylesheet ) );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $can,
+			'args'                => array(
+				'css'        => array( 'required' => true, 'type' => 'string' ),
+				'stylesheet' => $theme_arg,
+			),
+			'callback'            => function ( $req ) {
+				$stylesheet = aiwp_custom_css_theme( $req->get_param( 'stylesheet' ) );
+				if ( is_wp_error( $stylesheet ) ) {
+					return $stylesheet;
+				}
+				$css = (string) $req->get_param( 'css' );
+				// Same rule as the Customizer: the CSS is printed inside <style>, so no markup.
+				if ( false !== strpos( $css, '<' ) ) {
+					return new WP_Error( 'aiwp_bad_css', 'CSS must not contain "<".', array( 'status' => 400 ) );
+				}
+				$post = wp_update_custom_css_post( $css, array( 'stylesheet' => $stylesheet ) );
+				if ( is_wp_error( $post ) ) {
+					return $post;
+				}
+				do_action( 'litespeed_purge_all' );
+				return array( 'stylesheet' => $stylesheet, 'post_id' => $post->ID, 'css' => wp_get_custom_css( $stylesheet ) );
+			},
+		),
+	) );
+}
+
+/** Installed theme to read/write Additional CSS for; the active theme when none is given. */
+function aiwp_custom_css_theme( $stylesheet ) {
+	if ( empty( $stylesheet ) ) {
+		return get_stylesheet();
+	}
+	if ( ! wp_get_theme( $stylesheet )->exists() ) {
+		return new WP_Error( 'aiwp_no_theme', 'Theme is not installed: ' . $stylesheet, array( 'status' => 404 ) );
+	}
+	return $stylesheet;
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.8.0' );
+define( 'CSM_VERSION', '1.9.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

@@ -1,11 +1,11 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.8.0",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.8.0.zip",
+  "version": "1.9.0",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.9.0.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "sha256": "52a956ce736ebe0bcc59883d71ca90c5875080e901f7286fa618af7e3d74f923",
-  "changelog": "<h4>1.8.0</h4><ul><li>GET/POST ai-wp/v1/auto-updates: read and switch WordPress's automatic updates for plugins, themes and core (\"all\", \"none\" or per item; core \"all\", \"minor\" or \"off\"), the same options as the Plugins, Themes and Updates screens. The reply also reports constants or filters that would block them.</li></ul>"
+  "sha256": "5ccf997347e33b1550d30b1ff604bb5644588fcb32234cf5d721b6b43b0113ee",
+  "changelog": "<h4>1.9.0</h4><ul><li>GET/POST ai-wp/v1/custom-css: read and replace a theme's Additional CSS (the Customizer's custom_css post), also for an installed theme that is not active yet. Lets a site recolour the shared BOCP theme without a child theme, and the CSS survives theme updates. Needs edit_css; CSS containing \"<\" is refused.</li></ul>"
 }

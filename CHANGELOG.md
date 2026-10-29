@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.9.0
+- GET/POST ai-wp/v1/custom-css: read and replace a theme's Additional CSS (the Customizer's custom_css post), also for an installed theme that is not active yet. Lets a site recolour the shared BOCP theme without a child theme, and the CSS survives theme updates. Needs edit_css; CSS containing "<" is refused.
+
 ## 1.8.0
 - GET/POST ai-wp/v1/auto-updates: read and switch WordPress's automatic updates for plugins, themes and core ("all", "none" or per item; core "all", "minor" or "off"), the same options as the Plugins, Themes and Updates screens. The reply also reports constants or filters that would block them.
 
