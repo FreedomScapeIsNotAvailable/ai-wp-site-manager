@@ -82,6 +82,23 @@ takes `"all"` (major and minor), `"minor"` (security releases only) or `"off"`. 
 what is installed now; call it again after installing something new. Each part needs its
 capability: `update_plugins`, `update_themes` or `update_core`.
 
+## Error logs
+
+`GET ai-wp/v1/logs` lists the known logs by fixed key (`debug`, `aiwp`, `php`, `php-admin`,
+`php-ini`) with `exists`, `size`, `mtime`, `readable` and a `reason` when one cannot be used
+(`missing`, `not_readable`, `outside_site`). Paths are resolved on the server, never taken from
+the caller. `GET ai-wp/v1/logs/<key>?kb=128` returns the last N KB (1 to 1024) from a line
+boundary, with passwords, tokens, keys and Authorization values masked.
+`POST ai-wp/v1/logs/<key>/clear` with `{"expect": "<size>:<mtime>"}` empties the file in place,
+answers 409 if it changed since it was read, and keeps the last 256 KB in the option
+`aiwp_log_prev_<key>`.
+
+`GET|POST ai-wp/v1/error-logging` with `{"enabled": true, "hours": 24}` (1 to 168) turns on PHP
+error logging into the `aiwp` log for a limited time through a must-use plugin that removes
+itself at the deadline; `wp-config.php` is never edited. If `WP_DEBUG_LOG` is already on, errors
+keep going there (`already_logging`). The log stops growing at 5 MB. `{"enabled": false}` switches
+it off and keeps the log readable. On multisite these routes need `manage_network_options`.
+
 ## Content includes
 
 Write `{INCLUDE:/pricepage/}` (or a full URL on the same host) anywhere in a page or post.

@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.9.0
+ * Version:           1.10.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -1321,9 +1321,409 @@ function aiwp_custom_css_theme( $stylesheet ) {
 	return $stylesheet;
 }
 
+/* ------------------------------------------------------------------ error logs */
+
+/*
+ * GET  ai-wp/v1/logs                    -> the known log files (fixed keys, paths resolved here, never from the caller)
+ * GET  ai-wp/v1/logs/<key>?kb=128       -> the last N KB, starting at a line boundary, secrets masked
+ * POST ai-wp/v1/logs/<key>/clear {expect:"<size>:<mtime>"} -> empty the file in place; the last 256 KB are kept
+ *                                         in the option aiwp_log_prev_<key>; 409 when the file changed meanwhile
+ * GET|POST ai-wp/v1/error-logging {enabled, hours} -> timed PHP error logging into the plugin's own log ('aiwp'),
+ *   done by a must-use plugin that removes itself when the time runs out. wp-config.php is never edited.
+ * Responses carry no-store headers through csm_no_cache_headers (it covers the whole ai-wp/v1 namespace).
+ */
+define( 'AIWP_LOG_KEYS', 'debug,aiwp,php,php-admin,php-ini' );
+define( 'AIWP_LOG_KB_DEFAULT', 128 );
+define( 'AIWP_LOG_KB_MAX', 1024 );
+define( 'AIWP_LOG_PREV_BYTES', 262144 );
+define( 'AIWP_LOG_MAX_BYTES', 5242880 );
+define( 'AIWP_ERRLOG_OPTION', 'aiwp_error_logging' );
+define( 'AIWP_ERRLOG_FILE_OPTION', 'aiwp_log_file' );
+define( 'AIWP_ERRLOG_HOOK', 'aiwp_error_logging_expire' );
+define( 'AIWP_ERRLOG_MU_FILE', 'aiwp-error-logging.php' );
+define( 'AIWP_ERRLOG_HOURS_DEFAULT', 24 );
+define( 'AIWP_ERRLOG_HOURS_MAX', 168 );
+
+add_action( AIWP_ERRLOG_HOOK, 'aiwp_error_logging_disable' );
+register_deactivation_hook( __FILE__, 'aiwp_error_logging_disable' );
+register_uninstall_hook( __FILE__, 'aiwp_error_logging_uninstall' );
+
+/** Same rule as wp_debug_mode(): where WordPress writes its debug log when WP_DEBUG_LOG is on. */
+function aiwp_debug_log_path() {
+	if ( defined( 'WP_DEBUG_LOG' ) && is_string( WP_DEBUG_LOG ) && ! in_array( strtolower( WP_DEBUG_LOG ), array( '', 'true', '1' ), true ) ) {
+		return WP_DEBUG_LOG;
+	}
+	return WP_CONTENT_DIR . '/debug.log';
+}
+
+/** True when WordPress itself already sends PHP errors to its debug log (then the timed switch does not repoint error_log). */
+function aiwp_wp_debug_logging() {
+	return defined( 'WP_DEBUG' ) && WP_DEBUG && defined( 'WP_DEBUG_LOG' ) && WP_DEBUG_LOG;
+}
+
+/** key => array( path, root the real path must stay inside ). */
+function aiwp_log_candidates() {
+	return array(
+		'debug'     => array( aiwp_debug_log_path(), ABSPATH ),
+		'aiwp'      => array( (string) get_site_option( AIWP_ERRLOG_FILE_OPTION, '' ), dirname( ABSPATH ) ),
+		'php'       => array( ABSPATH . 'error_log', ABSPATH ),
+		'php-admin' => array( ABSPATH . 'wp-admin/error_log', ABSPATH ),
+		'php-ini'   => array( (string) ini_get( 'error_log' ), ABSPATH ),
+	);
+}
+
+function aiwp_path_inside( $real, $root ) {
+	$root = @realpath( $root );
+	if ( false === $root ) {
+		return false;
+	}
+	$root = rtrim( $root, '/\\' ) . DIRECTORY_SEPARATOR;
+	return 0 === strpos( rtrim( $real, '/\\' ) . DIRECTORY_SEPARATOR, $root );
+}
+
+/** Status of one log; 'path' is internal and stripped by aiwp_log_public(). Null for an unknown key. */
+function aiwp_log_resolve( $key ) {
+	$candidates = aiwp_log_candidates();
+	if ( ! in_array( $key, explode( ',', AIWP_LOG_KEYS ), true ) || ! isset( $candidates[ $key ] ) ) {
+		return null;
+	}
+	list( $path, $root ) = $candidates[ $key ];
+	$info = array( 'key' => $key, 'exists' => false, 'size' => 0, 'mtime' => null, 'readable' => false, 'reason' => null, 'path' => null );
+	if ( '' === $path ) {
+		$info['reason'] = 'missing';
+		return $info;
+	}
+	if ( 'aiwp' === $key && ( @is_link( $path ) || @is_link( dirname( $path ) ) ) ) {
+		$info['reason'] = 'outside_site';
+		return $info;
+	}
+	// realpath() is false for a missing file and for anything open_basedir hides; the parent tells the two apart.
+	$real = @realpath( $path );
+	if ( false === $real ) {
+		$parent         = @realpath( dirname( $path ) );
+		$info['reason'] = ( false === $parent || ! aiwp_path_inside( $parent, $root ) ) ? 'outside_site' : 'missing';
+		return $info;
+	}
+	if ( ! aiwp_path_inside( $real, $root ) ) {
+		$info['reason'] = 'outside_site';
+		return $info;
+	}
+	if ( ! @is_file( $real ) ) {
+		$info['reason'] = 'missing';
+		return $info;
+	}
+	clearstatcache( true, $real );
+	$info['exists']   = true;
+	$info['size']     = (int) filesize( $real );
+	$info['mtime']    = (int) filemtime( $real );
+	$info['readable'] = is_readable( $real );
+	$info['reason']   = $info['readable'] ? null : 'not_readable';
+	$info['path']     = $real;
+	return $info;
+}
+
+function aiwp_log_public( $info ) {
+	unset( $info['path'] );
+	return $info;
+}
+
+/** The log as a usable file, or a WP_Error (404 unknown/missing, 403 outside the site or unreadable). */
+function aiwp_log_usable( $key ) {
+	$info = aiwp_log_resolve( $key );
+	if ( null === $info ) {
+		return new WP_Error( 'aiwp_bad_log', 'Unknown log. Use one of: ' . AIWP_LOG_KEYS . '.', array( 'status' => 404 ) );
+	}
+	if ( null !== $info['reason'] ) {
+		$status = 'missing' === $info['reason'] ? 404 : 403;
+		return new WP_Error( 'aiwp_log_' . $info['reason'], 'Log "' . $key . '" is not usable: ' . $info['reason'] . '.', array( 'status' => $status ) );
+	}
+	return $info;
+}
+
+function aiwp_log_utf8( $text ) {
+	if ( function_exists( 'mb_convert_encoding' ) ) {
+		return mb_convert_encoding( $text, 'UTF-8', 'UTF-8' );
+	}
+	return wp_check_invalid_utf8( $text, true );
+}
+
+/** Masks credentials before log text leaves the server or is stored in an option. */
+function aiwp_log_mask( $text ) {
+	$names = '[\w-]*(?:password|passwd|pass|pwd|api_key|key|token|secret)';
+	$text  = preg_replace( '/(Authorization["\']?\s*[:=]\s*["\']?\s*(?:Basic|Bearer)\s+)[A-Za-z0-9._~+\/=-]+/i', '$1***', $text );
+	$text  = preg_replace( '/(\bBearer\s+)[A-Za-z0-9._~+\/=-]{8,}/i', '$1***', $text );
+	$text  = preg_replace( '/("' . $names . '"\s*:\s*")(?:[^"\\\\]|\\\\.)*(")/i', '$1***$2', $text );
+	$text  = preg_replace( '/((?<![\w-])' . $names . '=)[^&\s"\'<>]+/i', '$1***', $text );
+	$text  = preg_replace( '/(\[["\']?' . $names . '["\']?\]\s*=>\s*)\S+/i', '$1***', $text );
+	return $text;
+}
+
+/** Up to $bytes from the end of an open file, starting at a line boundary when the start was cut. */
+function aiwp_log_read_tail( $fh, $size, $bytes ) {
+	$start = max( 0, $size - $bytes );
+	fseek( $fh, $start );
+	$data = (string) stream_get_contents( $fh, $size - $start );
+	if ( $start > 0 ) {
+		$nl = strpos( $data, "\n" );
+		if ( false !== $nl ) {
+			$data = (string) substr( $data, $nl + 1 );
+		}
+	}
+	return array( $data, $start > 0 );
+}
+
+function aiwp_log_read( $key, $kb ) {
+	$info = aiwp_log_usable( $key );
+	if ( is_wp_error( $info ) ) {
+		return $info;
+	}
+	$fh = @fopen( $info['path'], 'rb' );
+	if ( ! $fh ) {
+		return new WP_Error( 'aiwp_log_not_readable', 'Could not open log "' . $key . '".', array( 'status' => 403 ) );
+	}
+	$stat = fstat( $fh );
+	list( $data, $truncated ) = aiwp_log_read_tail( $fh, (int) $stat['size'], (int) $kb * 1024 );
+	fclose( $fh );
+	return array(
+		'key'       => $key,
+		'size'      => (int) $stat['size'],
+		'mtime'     => (int) $stat['mtime'],
+		'expect'    => (int) $stat['size'] . ':' . (int) $stat['mtime'],
+		'truncated' => $truncated,
+		'content'   => aiwp_log_mask( aiwp_log_utf8( $data ) ),
+	);
+}
+
+function aiwp_log_clear( $key, $expect ) {
+	$info = aiwp_log_usable( $key );
+	if ( is_wp_error( $info ) ) {
+		return $info;
+	}
+	$fh = @fopen( $info['path'], 'r+' );
+	if ( ! $fh ) {
+		return new WP_Error( 'aiwp_log_not_writable', 'Log "' . $key . '" is not writable by WordPress.', array( 'status' => 403 ) );
+	}
+	if ( ! flock( $fh, LOCK_EX ) ) {
+		fclose( $fh );
+		return new WP_Error( 'aiwp_log_locked', 'Could not lock log "' . $key . '".', array( 'status' => 409 ) );
+	}
+	clearstatcache( true, $info['path'] );
+	$stat    = fstat( $fh );
+	$size    = (int) $stat['size'];
+	$current = $size . ':' . (int) $stat['mtime'];
+	if ( $current !== trim( (string) $expect ) ) {
+		flock( $fh, LOCK_UN );
+		fclose( $fh );
+		return new WP_Error( 'aiwp_log_changed', 'The log changed since it was read; read it again and pass the new expect value.', array( 'status' => 409, 'expect' => $current ) );
+	}
+	list( $tail ) = aiwp_log_read_tail( $fh, $size, AIWP_LOG_PREV_BYTES );
+	// Stored masked and valid UTF-8: the options table rejects invalid UTF-8, and credentials do not belong in the database.
+	update_option( 'aiwp_log_prev_' . $key, array( 'saved' => current_time( 'c' ), 'size' => $size, 'content' => aiwp_log_mask( aiwp_log_utf8( $tail ) ) ), false );
+	$ok = ftruncate( $fh, 0 );
+	fflush( $fh );
+	flock( $fh, LOCK_UN );
+	fclose( $fh );
+	if ( ! $ok ) {
+		return new WP_Error( 'aiwp_log_not_cleared', 'Could not empty log "' . $key . '".', array( 'status' => 500 ) );
+	}
+	return array( 'key' => $key, 'cleared' => $size, 'previous_saved_in' => 'aiwp_log_prev_' . $key );
+}
+
+/* -------- timed error logging (must-use plugin) */
+
+function aiwp_errlog_mu_path() {
+	return WPMU_PLUGIN_DIR . '/' . AIWP_ERRLOG_MU_FILE;
+}
+
+/** Protects a log folder that may be reachable from the web: deny-all .htaccess (Apache 2.4 and 2.2) and an empty index.php. */
+function aiwp_log_dir_protect( $dir ) {
+	$htaccess = $dir . '/.htaccess';
+	$index    = $dir . '/index.php';
+	if ( ! file_exists( $htaccess ) && false === @file_put_contents( $htaccess, "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nOrder deny,allow\nDeny from all\n</IfModule>\n", LOCK_EX ) ) {
+		return false;
+	}
+	if ( ! file_exists( $index ) && false === @file_put_contents( $index, "<?php\n", LOCK_EX ) ) {
+		return false;
+	}
+	return true;
+}
+
+/** The plugin's own log file: outside the web root when possible, else wp-content/aiwp-logs; random file name, no symlinks. */
+function aiwp_log_prepare() {
+	$file = (string) get_site_option( AIWP_ERRLOG_FILE_OPTION, '' );
+	if ( '' !== $file && @is_dir( dirname( $file ) ) && ! @is_link( dirname( $file ) ) && ! @is_link( $file ) && is_writable( dirname( $file ) ) ) {
+		return $file;
+	}
+	foreach ( array( dirname( ABSPATH ) . '/aiwp-logs', WP_CONTENT_DIR . '/aiwp-logs' ) as $dir ) {
+		if ( @is_link( $dir ) || ( ! @is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) || @is_link( $dir ) || ! is_writable( $dir ) ) {
+			continue;
+		}
+		// dirname(ABSPATH) is still the web root when WordPress lives in a subfolder, so both locations get the deny rules.
+		if ( ! aiwp_log_dir_protect( $dir ) ) {
+			continue;
+		}
+		$file = $dir . '/aiwp-errors-' . wp_generate_password( 16, false ) . '.log';
+		update_site_option( AIWP_ERRLOG_FILE_OPTION, $file );
+		return $file;
+	}
+	return new WP_Error( 'aiwp_log_dir', 'No writable folder for the error log (tried ' . dirname( ABSPATH ) . '/aiwp-logs and ' . WP_CONTENT_DIR . '/aiwp-logs).', array( 'status' => 500 ) );
+}
+
+function aiwp_errlog_mu_source() {
+	return "<?php\n"
+		. "/*\n * Plugin Name: AI WP Site Manager - timed error logging\n"
+		. " * Description: Written by AI WP Site Manager (ai-wp/v1/error-logging). Logs PHP errors to the plugin's own log until the deadline, then removes itself.\n */\n"
+		. "defined( 'ABSPATH' ) || exit;\n"
+		. "( function () {\n"
+		. "\t\$s = get_site_option( '" . AIWP_ERRLOG_OPTION . "' );\n"
+		. "\tif ( ! is_array( \$s ) || empty( \$s['until'] ) || time() >= (int) \$s['until'] ) {\n"
+		. "\t\tdelete_site_option( '" . AIWP_ERRLOG_OPTION . "' );\n"
+		. "\t\t@unlink( __FILE__ );\n"
+		. "\t\treturn;\n"
+		. "\t}\n"
+		. "\tif ( defined( 'WP_DEBUG' ) && WP_DEBUG && defined( 'WP_DEBUG_LOG' ) && WP_DEBUG_LOG ) {\n"
+		. "\t\treturn;\n"
+		. "\t}\n"
+		. "\t\$f = isset( \$s['file'] ) ? (string) \$s['file'] : '';\n"
+		. "\tif ( '' === \$f || @is_link( \$f ) || @is_link( dirname( \$f ) ) ) {\n"
+		. "\t\treturn;\n"
+		. "\t}\n"
+		. "\tclearstatcache( true, \$f );\n"
+		. "\tif ( @file_exists( \$f ) && @filesize( \$f ) > " . AIWP_LOG_MAX_BYTES . " ) {\n"
+		. "\t\treturn;\n"
+		. "\t}\n"
+		. "\tini_set( 'log_errors', '1' );\n"
+		. "\tini_set( 'display_errors', '0' );\n"
+		. "\terror_reporting( E_ALL );\n"
+		. "\tini_set( 'error_log', \$f );\n"
+		. "} )();\n";
+}
+
+function aiwp_error_logging_state() {
+	$s       = get_site_option( AIWP_ERRLOG_OPTION );
+	$until   = is_array( $s ) && ! empty( $s['until'] ) ? (int) $s['until'] : 0;
+	$mu      = file_exists( aiwp_errlog_mu_path() );
+	$enabled = $mu && $until > time();
+	$log     = aiwp_log_resolve( 'aiwp' );
+	return array(
+		'enabled'         => $enabled,
+		'until'           => $enabled ? gmdate( 'c', $until ) : null,
+		'seconds_left'    => $enabled ? $until - time() : 0,
+		'already_logging' => aiwp_wp_debug_logging(),
+		'log_key'         => 'aiwp',
+		'log_over_limit'  => $log && $log['exists'] && $log['size'] > AIWP_LOG_MAX_BYTES,
+		'mu_plugin'       => $mu,
+		'limits'          => array(
+			'hours_default' => AIWP_ERRLOG_HOURS_DEFAULT,
+			'hours_min'     => 1,
+			'hours_max'     => AIWP_ERRLOG_HOURS_MAX,
+			'max_log_bytes' => AIWP_LOG_MAX_BYTES,
+		),
+	);
+}
+
+function aiwp_error_logging_enable( $hours ) {
+	$file = aiwp_log_prepare();
+	if ( is_wp_error( $file ) ) {
+		return $file;
+	}
+	if ( ! file_exists( $file ) ) {
+		@touch( $file );
+	}
+	if ( @is_link( $file ) || ! is_writable( $file ) ) {
+		return new WP_Error( 'aiwp_log_file', 'The error log file is not a writable regular file.', array( 'status' => 500 ) );
+	}
+	if ( ! wp_mkdir_p( WPMU_PLUGIN_DIR ) || @is_link( aiwp_errlog_mu_path() ) ) {
+		return new WP_Error( 'aiwp_mu_dir', 'Could not create the must-use plugins folder.', array( 'status' => 500 ) );
+	}
+	$until = time() + (int) $hours * HOUR_IN_SECONDS;
+	update_site_option( AIWP_ERRLOG_OPTION, array( 'until' => $until, 'file' => $file ) );
+	if ( false === @file_put_contents( aiwp_errlog_mu_path(), aiwp_errlog_mu_source(), LOCK_EX ) ) {
+		delete_site_option( AIWP_ERRLOG_OPTION );
+		return new WP_Error( 'aiwp_mu_write', 'Could not write ' . aiwp_errlog_mu_path() . '.', array( 'status' => 500 ) );
+	}
+	wp_clear_scheduled_hook( AIWP_ERRLOG_HOOK );
+	wp_schedule_single_event( $until, AIWP_ERRLOG_HOOK );
+	return aiwp_error_logging_state();
+}
+
+/** Removes the must-use plugin, the scheduled removal and the option; the log file stays readable. */
+function aiwp_error_logging_disable() {
+	$mu = aiwp_errlog_mu_path();
+	if ( file_exists( $mu ) || @is_link( $mu ) ) {
+		@unlink( $mu );
+	}
+	wp_clear_scheduled_hook( AIWP_ERRLOG_HOOK );
+	delete_site_option( AIWP_ERRLOG_OPTION );
+}
+
+function aiwp_error_logging_uninstall() {
+	aiwp_error_logging_disable();
+	delete_site_option( AIWP_ERRLOG_FILE_OPTION );
+}
+
+add_action( 'rest_api_init', 'aiwp_register_log_routes' );
+function aiwp_register_log_routes() {
+	// On multisite the logs and the switch are network-wide, so a single site's administrator is not enough.
+	$can = function () {
+		return current_user_can( is_multisite() ? 'manage_network_options' : 'manage_options' );
+	};
+	register_rest_route( 'ai-wp/v1', '/logs', array(
+		'methods'             => 'GET',
+		'permission_callback' => $can,
+		'callback'            => function () {
+			$logs = array();
+			foreach ( explode( ',', AIWP_LOG_KEYS ) as $key ) {
+				$logs[] = aiwp_log_public( aiwp_log_resolve( $key ) );
+			}
+			return array( 'logs' => $logs, 'error_logging' => aiwp_error_logging_state() );
+		},
+	) );
+	register_rest_route( 'ai-wp/v1', '/logs/(?P<key>[a-z-]+)', array(
+		'methods'             => 'GET',
+		'permission_callback' => $can,
+		'args'                => array(
+			'kb' => array( 'type' => 'integer', 'default' => AIWP_LOG_KB_DEFAULT, 'minimum' => 1, 'maximum' => AIWP_LOG_KB_MAX ),
+		),
+		'callback'            => function ( $req ) {
+			return aiwp_log_read( $req['key'], (int) $req->get_param( 'kb' ) );
+		},
+	) );
+	register_rest_route( 'ai-wp/v1', '/logs/(?P<key>[a-z-]+)/clear', array(
+		'methods'             => 'POST',
+		'permission_callback' => $can,
+		'args'                => array( 'expect' => array( 'required' => true, 'type' => 'string' ) ),
+		'callback'            => function ( $req ) {
+			return aiwp_log_clear( $req['key'], $req->get_param( 'expect' ) );
+		},
+	) );
+	register_rest_route( 'ai-wp/v1', '/error-logging', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $can,
+			'callback'            => 'aiwp_error_logging_state',
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $can,
+			'args'                => array(
+				'enabled' => array( 'required' => true, 'type' => 'boolean' ),
+				'hours'   => array( 'type' => 'integer', 'default' => AIWP_ERRLOG_HOURS_DEFAULT, 'minimum' => 1, 'maximum' => AIWP_ERRLOG_HOURS_MAX ),
+			),
+			'callback'            => function ( $req ) {
+				if ( ! $req->get_param( 'enabled' ) ) {
+					aiwp_error_logging_disable();
+					return aiwp_error_logging_state();
+				}
+				return aiwp_error_logging_enable( (int) $req->get_param( 'hours' ) );
+			},
+		),
+	) );
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.9.0' );
+define( 'CSM_VERSION', '1.10.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

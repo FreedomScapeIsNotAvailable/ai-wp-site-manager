@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.0
+- GET ai-wp/v1/logs and GET ai-wp/v1/logs/&lt;key&gt;?kb=128: list and read the site's error logs (debug, aiwp, php, php-admin, php-ini) by fixed key; paths are resolved on the server and must stay inside the site. Reads return the last N KB (max 1024) from a line boundary, with passwords, tokens, keys and Authorization values masked.
+- POST ai-wp/v1/logs/&lt;key&gt;/clear {expect: "size:mtime"}: empties a log in place, refuses with 409 if it changed since it was read, and keeps the last 256 KB in the option aiwp_log_prev_&lt;key&gt;.
+- GET/POST ai-wp/v1/error-logging {enabled, hours}: timed PHP error logging (1 to 168 hours, default 24) through a must-use plugin that removes itself at the deadline, without editing wp-config.php. Logs go to a randomly named file outside the web root when possible (else wp-content/aiwp-logs with deny rules), stop at 5 MB, and leave WP_DEBUG_LOG alone when it is already on. Deactivating or uninstalling the plugin removes the switch.
+- On multisite these routes need manage_network_options (the logs and the switch are network-wide); elsewhere manage_options.
+
 ## 1.9.0
 - GET/POST ai-wp/v1/custom-css: read and replace a theme's Additional CSS (the Customizer's custom_css post), also for an installed theme that is not active yet. Lets a site recolour the shared BOCP theme without a child theme, and the CSS survives theme updates. Needs edit_css; CSS containing "<" is refused.
 

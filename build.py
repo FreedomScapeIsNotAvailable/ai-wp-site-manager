@@ -49,7 +49,12 @@ with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
 # Versioned copy: the manifest points at it, so GitHub's CDN can never serve a stale zip for a new version.
 versioned = DIST / f"ai-wp-site-manager-{version}.zip"
 versioned.write_bytes(zip_path.read_bytes())
-for old_zip in sorted(DIST.glob("ai-wp-site-manager-*.zip"))[:-3]:
+def zip_version(p: Path) -> tuple:
+    return tuple(int(x) if x.isdigit() else 0 for x in p.stem[len("ai-wp-site-manager-"):].split("."))
+
+
+# Numeric version order: a plain name sort puts 1.10.0 before 1.9.0 and would delete the new zip.
+for old_zip in sorted(DIST.glob("ai-wp-site-manager-*.zip"), key=zip_version)[:-3]:
     old_zip.unlink()
 
 manifest = {
