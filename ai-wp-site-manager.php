@@ -1372,6 +1372,11 @@ function aiwp_log_candidates() {
 	);
 }
 
+/** The plugin's own log is only ever aiwp-logs/aiwp-errors-<16 alphanumerics>.log, whatever the option says. */
+function aiwp_is_own_log_name( $path ) {
+	return 'aiwp-logs' === basename( dirname( $path ) ) && (bool) preg_match( '/^aiwp-errors-[A-Za-z0-9]{16}\.log$/', basename( $path ) );
+}
+
 function aiwp_path_inside( $real, $root ) {
 	$root = @realpath( $root );
 	if ( false === $root ) {
@@ -1393,7 +1398,7 @@ function aiwp_log_resolve( $key ) {
 		$info['reason'] = 'missing';
 		return $info;
 	}
-	if ( 'aiwp' === $key && ( @is_link( $path ) || @is_link( dirname( $path ) ) ) ) {
+	if ( @is_link( $path ) || ( 'aiwp' === $key && ( @is_link( dirname( $path ) ) || ! aiwp_is_own_log_name( $path ) ) ) ) {
 		$info['reason'] = 'outside_site';
 		return $info;
 	}
@@ -1450,11 +1455,14 @@ function aiwp_log_utf8( $text ) {
 /** Masks credentials before log text leaves the server or is stored in an option. */
 function aiwp_log_mask( $text ) {
 	$names = '[\w-]*(?:password|passwd|pass|pwd|api_key|key|token|secret)';
-	$text  = preg_replace( '/(Authorization["\']?\s*[:=]\s*["\']?\s*(?:Basic|Bearer)\s+)[A-Za-z0-9._~+\/=-]+/i', '$1***', $text );
+	$text  = preg_replace( '/(Authorization["\'\]]?\s*(?:=>|[:=])\s*["\']?\s*(?:Basic|Bearer)\s+)[A-Za-z0-9._~+\/=-]+/i', '$1***', $text );
 	$text  = preg_replace( '/(\bBearer\s+)[A-Za-z0-9._~+\/=-]{8,}/i', '$1***', $text );
+	$text  = preg_replace( '/(\bBasic\s+)(?=[A-Za-z0-9+\/]*[0-9+\/=])[A-Za-z0-9+\/]{12,}={0,2}/', '$1***', $text );
 	$text  = preg_replace( '/("' . $names . '"\s*:\s*")(?:[^"\\\\]|\\\\.)*(")/i', '$1***$2', $text );
+	$text  = preg_replace( '/(\\\\+"' . $names . '\\\\+"\s*:\s*\\\\+")(?:[^"\\\\]|\\\\(?!"))*(\\\\+")/i', '$1***$2', $text );
+	$text  = preg_replace( '/(\'' . $names . '\'\s*=>\s*\')(?:[^\'\\\\]|\\\\.)*(\')/i', '$1***$2', $text );
 	$text  = preg_replace( '/((?<![\w-])' . $names . '=)[^&\s"\'<>]+/i', '$1***', $text );
-	$text  = preg_replace( '/(\[["\']?' . $names . '["\']?\]\s*=>\s*)\S+/i', '$1***', $text );
+	$text  = preg_replace( '/(\[["\']?' . $names . '["\']?\]\s*=>\s*)[^\r\n]+/i', '$1***', $text );
 	return $text;
 }
 
@@ -1585,7 +1593,8 @@ function aiwp_errlog_mu_source() {
 		. "\t\treturn;\n"
 		. "\t}\n"
 		. "\t\$f = isset( \$s['file'] ) ? (string) \$s['file'] : '';\n"
-		. "\tif ( '' === \$f || @is_link( \$f ) || @is_link( dirname( \$f ) ) ) {\n"
+		. "\tif ( '' === \$f || @is_link( \$f ) || @is_link( dirname( \$f ) ) || 'aiwp-logs' !== basename( dirname( \$f ) )\n"
+		. "\t\t|| ! preg_match( '/^aiwp-errors-[A-Za-z0-9]{16}\\.log\$/', basename( \$f ) ) ) {\n"
 		. "\t\treturn;\n"
 		. "\t}\n"
 		. "\tclearstatcache( true, \$f );\n"
