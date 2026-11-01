@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.11.0
+- GET/POST ai-wp/v1/stub-shortcodes {names: []}: a list of leftover shortcode names (from removed plugins) that are registered as empty shortcodes, so they render as nothing instead of raw "[name]" text. A name already registered by an active plugin is left alone (GET reports it as registered_by_other_plugin). Names: letters, digits, _ and -, at most 50; the list replaces the previous one. Needs manage_options; removed on uninstall.
+
 ## 1.10.0
 - GET ai-wp/v1/logs and GET ai-wp/v1/logs/&lt;key&gt;?kb=128: list and read the site's error logs (debug, aiwp, php, php-admin, php-ini) by fixed key; paths are resolved on the server and must stay inside the site. Reads return the last N KB (max 1024) from a line boundary, with passwords, tokens, keys and Authorization values masked.
 - POST ai-wp/v1/logs/&lt;key&gt;/clear {expect: "size:mtime"}: empties a log in place, refuses with 409 if it changed since it was read, and keeps the last 256 KB in the option aiwp_log_prev_&lt;key&gt;.

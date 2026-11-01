@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.10.0
+ * Version:           1.11.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -922,6 +922,81 @@ function aiwp_register_redirect_routes() {
 	) );
 }
 
+/*
+ * Leftover shortcodes: when a plugin is removed, its [shortcode] stays in post content and is shown as raw text.
+ * Names listed here are registered as empty shortcodes (only if nothing else registers them), so they render as
+ * nothing until the content is cleaned. GET/POST ai-wp/v1/stub-shortcodes {names: []}; the list replaces the old one.
+ */
+define( 'AIWP_STUB_SHORTCODES_OPTION', 'aiwp_stub_shortcodes' );
+define( 'AIWP_STUB_SHORTCODES_MAX', 50 );
+
+function aiwp_get_stub_shortcodes() {
+	$list = get_option( AIWP_STUB_SHORTCODES_OPTION, array() );
+	return is_array( $list ) ? array_values( $list ) : array();
+}
+
+add_action( 'init', 'aiwp_register_stub_shortcodes', 99 );
+function aiwp_register_stub_shortcodes() {
+	foreach ( aiwp_get_stub_shortcodes() as $name ) {
+		if ( ! shortcode_exists( $name ) ) {
+			add_shortcode( $name, '__return_empty_string' );
+		}
+	}
+}
+
+function aiwp_save_stub_shortcodes( $names ) {
+	if ( ! is_array( $names ) ) {
+		return new WP_Error( 'aiwp_bad_names', 'names must be a list of shortcode names.', array( 'status' => 400 ) );
+	}
+	$clean = array();
+	foreach ( $names as $name ) {
+		$name = trim( (string) $name, " \t[]" );
+		if ( '' === $name ) {
+			continue;
+		}
+		if ( ! preg_match( '/^[A-Za-z0-9_-]{1,64}$/', $name ) ) {
+			return new WP_Error( 'aiwp_bad_name', 'Invalid shortcode name: ' . substr( $name, 0, 64 ) . ' (letters, digits, _ and - only).', array( 'status' => 400 ) );
+		}
+		$clean[ $name ] = $name;
+	}
+	if ( count( $clean ) > AIWP_STUB_SHORTCODES_MAX ) {
+		return new WP_Error( 'aiwp_too_many', 'At most ' . AIWP_STUB_SHORTCODES_MAX . ' names.', array( 'status' => 400 ) );
+	}
+	update_option( AIWP_STUB_SHORTCODES_OPTION, array_values( $clean ), false );
+	do_action( 'litespeed_purge_all' );
+	return array_values( $clean );
+}
+
+add_action( 'rest_api_init', 'aiwp_register_stub_shortcode_routes' );
+function aiwp_register_stub_shortcode_routes() {
+	$can = function () {
+		return current_user_can( 'manage_options' );
+	};
+	register_rest_route( 'ai-wp/v1', '/stub-shortcodes', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $can,
+			'callback'            => function () {
+				$names = aiwp_get_stub_shortcodes();
+				$state = array();
+				foreach ( $names as $name ) {
+					$state[ $name ] = shortcode_exists( $name ) && '__return_empty_string' !== $GLOBALS['shortcode_tags'][ $name ] ? 'registered_by_other_plugin' : 'stubbed';
+				}
+				return array( 'names' => $names, 'state' => (object) $state );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $can,
+			'args'                => array( 'names' => array( 'required' => true, 'type' => 'array', 'items' => array( 'type' => 'string' ) ) ),
+			'callback'            => function ( $req ) {
+				$res = aiwp_save_stub_shortcodes( $req->get_param( 'names' ) );
+				return is_wp_error( $res ) ? $res : array( 'names' => $res, 'count' => count( $res ) );
+			},
+		),
+	) );
+}
+
 add_action( 'admin_post_aiwp_save_redirects', 'aiwp_handle_redirects_form' );
 function aiwp_handle_redirects_form() {
 	if ( ! current_user_can( 'manage_options' ) ) {
@@ -1669,6 +1744,7 @@ function aiwp_error_logging_disable() {
 function aiwp_error_logging_uninstall() {
 	aiwp_error_logging_disable();
 	delete_site_option( AIWP_ERRLOG_FILE_OPTION );
+	delete_option( AIWP_STUB_SHORTCODES_OPTION );
 }
 
 add_action( 'rest_api_init', 'aiwp_register_log_routes' );
@@ -1732,7 +1808,7 @@ function aiwp_register_log_routes() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.10.0' );
+define( 'CSM_VERSION', '1.11.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

@@ -1,11 +1,11 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.10.0",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.10.0.zip",
+  "version": "1.11.0",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.11.0.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "sha256": "88252e53c70a533959969b8e360391260a039b426c503602ad1010fefee0749a",
-  "changelog": "<h4>1.10.0</h4><ul><li>GET ai-wp/v1/logs and GET ai-wp/v1/logs/&lt;key&gt;?kb=128: list and read the site's error logs (debug, aiwp, php, php-admin, php-ini) by fixed key; paths are resolved on the server and must stay inside the site. Reads return the last N KB (max 1024) from a line boundary, with passwords, tokens, keys and Authorization values masked.</li><li>POST ai-wp/v1/logs/&lt;key&gt;/clear {expect: \"size:mtime\"}: empties a log in place, refuses with 409 if it changed since it was read, and keeps the last 256 KB in the option aiwp_log_prev_&lt;key&gt;.</li><li>GET/POST ai-wp/v1/error-logging {enabled, hours}: timed PHP error logging (1 to 168 hours, default 24) through a must-use plugin that removes itself at the deadline, without editing wp-config.php. Logs go to a randomly named file outside the web root when possible (else wp-content/aiwp-logs with deny rules), stop at 5 MB, and leave WP_DEBUG_LOG alone when it is already on. Deactivating or uninstalling the plugin removes the switch.</li><li>On multisite these routes need manage_network_options (the logs and the switch are network-wide); elsewhere manage_options.</li></ul>"
+  "sha256": "721ce05a7b87fe4f60121f4dcfa23766792daeb7640be55c70d8a5301b0c07ff",
+  "changelog": "<h4>1.11.0</h4><ul><li>GET/POST ai-wp/v1/stub-shortcodes {names: []}: a list of leftover shortcode names (from removed plugins) that are registered as empty shortcodes, so they render as nothing instead of raw \"[name]\" text. A name already registered by an active plugin is left alone (GET reports it as registered_by_other_plugin). Names: letters, digits, _ and -, at most 50; the list replaces the previous one. Needs manage_options; removed on uninstall.</li></ul>"
 }
