@@ -1,11 +1,11 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.11.0",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.11.0.zip",
+  "version": "1.12.0",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.12.0.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "sha256": "721ce05a7b87fe4f60121f4dcfa23766792daeb7640be55c70d8a5301b0c07ff",
-  "changelog": "<h4>1.11.0</h4><ul><li>GET/POST ai-wp/v1/stub-shortcodes {names: []}: a list of leftover shortcode names (from removed plugins) that are registered as empty shortcodes, so they render as nothing instead of raw \"[name]\" text. A name already registered by an active plugin is left alone (GET reports it as registered_by_other_plugin). Names: letters, digits, _ and -, at most 50; the list replaces the previous one. Needs manage_options; removed on uninstall.</li></ul>"
+  "sha256": "567f01e58cacb0f3b921d2153ff305f747ff04d4917cd90e1d1c47385c9668d1",
+  "changelog": "<h4>1.12.0</h4><ul><li>{INCLUDE:} may also fetch from forms.bocp.eu, so a BOCP form's embed.html fragment (form only, scoped CSS) can be placed directly in a page instead of an iframe.</li><li>Include cache lowered from 10 to 5 minutes (AIWP_INCLUDE_TTL 300; LiteSpeed's page TTL follows it on pages with an include).</li></ul>"
 }

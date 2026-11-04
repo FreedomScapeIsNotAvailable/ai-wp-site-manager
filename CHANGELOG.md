@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.12.0
+- {INCLUDE:} may also fetch from forms.bocp.eu, so a BOCP form's embed.html fragment (form only, scoped CSS) can be placed directly in a page instead of an iframe.
+- Include cache lowered from 10 to 5 minutes (AIWP_INCLUDE_TTL 300; LiteSpeed's page TTL follows it on pages with an include).
+
 ## 1.11.0
 - GET/POST ai-wp/v1/stub-shortcodes {names: []}: a list of leftover shortcode names (from removed plugins) that are registered as empty shortcodes, so they render as nothing instead of raw "[name]" text. A name already registered by an active plugin is left alone (GET reports it as registered_by_other_plugin). Names: letters, digits, _ and -, at most 50; the list replaces the previous one. Needs manage_options; removed on uninstall.
 

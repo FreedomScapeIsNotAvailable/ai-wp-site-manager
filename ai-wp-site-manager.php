@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.11.0
+ * Version:           1.12.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -411,7 +411,7 @@ function csm_delete_theme( WP_REST_Request $req ) {
  * the last good copy is used so a hiccup in the generating script never blanks the page.
  * LiteSpeed's page cache TTL is lowered to the same value on pages that contain an include.
  */
-define( 'AIWP_INCLUDE_TTL', 600 );
+define( 'AIWP_INCLUDE_TTL', 300 );
 
 add_filter( 'the_content', 'aiwp_render_includes', 20 );
 
@@ -453,8 +453,8 @@ function aiwp_render_includes( $content ) {
 	);
 }
 
-/** Hosts whose HTML may be included: this site plus the team's own sites (filter ai_wp_include_hosts to extend). */
-define( 'AIWP_INCLUDE_HOSTS', 'bocp.ro,www.bocp.ro,cloudsales.ro,www.cloudsales.ro' );
+/** Hosts whose HTML may be included: this site, the team's own sites and the BOCP forms host (filter ai_wp_include_hosts to extend). */
+define( 'AIWP_INCLUDE_HOSTS', 'bocp.ro,www.bocp.ro,cloudsales.ro,www.cloudsales.ro,forms.bocp.eu' );
 function aiwp_include_allowed_hosts() {
 	$hosts   = array_map( 'trim', explode( ',', AIWP_INCLUDE_HOSTS ) );
 	$hosts[] = strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
@@ -1808,7 +1808,7 @@ function aiwp_register_log_routes() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.11.0' );
+define( 'CSM_VERSION', '1.12.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
