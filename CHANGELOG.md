@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.13.0
+- Includes from forms.bocp.eu (AIWP_INCLUDE_LIVE_HOSTS) are fetched fresh on every page view and the page is marked no-cache for LiteSpeed: a BOCP form carries a validation key that changes when the form is saved, so a cached copy failed on submit. The last good copy is still used if forms.bocp.eu does not answer. Other includes keep the 5-minute cache.
+
 ## 1.12.0
 - {INCLUDE:} may also fetch from forms.bocp.eu, so a BOCP form's embed.html fragment (form only, scoped CSS) can be placed directly in a page instead of an iframe.
 - Include cache lowered from 10 to 5 minutes (AIWP_INCLUDE_TTL 300; LiteSpeed's page TTL follows it on pages with an include).

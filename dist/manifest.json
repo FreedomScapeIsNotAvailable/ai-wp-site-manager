@@ -1,11 +1,11 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.12.0",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.12.0.zip",
+  "version": "1.13.0",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.13.0.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "sha256": "567f01e58cacb0f3b921d2153ff305f747ff04d4917cd90e1d1c47385c9668d1",
-  "changelog": "<h4>1.12.0</h4><ul><li>{INCLUDE:} may also fetch from forms.bocp.eu, so a BOCP form's embed.html fragment (form only, scoped CSS) can be placed directly in a page instead of an iframe.</li><li>Include cache lowered from 10 to 5 minutes (AIWP_INCLUDE_TTL 300; LiteSpeed's page TTL follows it on pages with an include).</li></ul>"
+  "sha256": "63624bb04ad20a4ca8be1605a1ef34483e32333e172df7e6e93c1237cbe89b37",
+  "changelog": "<h4>1.13.0</h4><ul><li>Includes from forms.bocp.eu (AIWP_INCLUDE_LIVE_HOSTS) are fetched fresh on every page view and the page is marked no-cache for LiteSpeed: a BOCP form carries a validation key that changes when the form is saved, so a cached copy failed on submit. The last good copy is still used if forms.bocp.eu does not answer. Other includes keep the 5-minute cache.</li></ul>"
 }

@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.12.0
+ * Version:           1.13.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -441,8 +441,12 @@ function aiwp_render_includes( $content ) {
 			if ( ++$count > AIWP_INCLUDE_MAX ) {
 				return '';
 			}
-			$ttl = (int) apply_filters( 'ai_wp_include_ttl', AIWP_INCLUDE_TTL, $m[1] );
-			do_action( 'litespeed_control_set_ttl', $ttl );
+			$ttl = aiwp_include_is_live( $m[1] ) ? 0 : (int) apply_filters( 'ai_wp_include_ttl', AIWP_INCLUDE_TTL, $m[1] );
+			if ( $ttl > 0 ) {
+				do_action( 'litespeed_control_set_ttl', $ttl );
+			} else {
+				do_action( 'litespeed_control_set_nocache', 'aiwp live include' );
+			}
 			$html = aiwp_fetch_include( $m[1], $ttl, $trusted );
 			if ( null === $html ) {
 				return '<!-- include unavailable: ' . esc_html( $m[1] ) . ' -->';
@@ -461,6 +465,16 @@ function aiwp_include_allowed_hosts() {
 	return array_values( array_unique( array_filter( array_map( 'strtolower', apply_filters( 'ai_wp_include_hosts', $hosts ) ) ) ) );
 }
 
+/*
+ * Hosts fetched fresh on every view and never page-cached: a BOCP form carries a validation key that
+ * changes when the form is saved, so a cached copy would fail on submit.
+ */
+define( 'AIWP_INCLUDE_LIVE_HOSTS', 'forms.bocp.eu' );
+function aiwp_include_is_live( $target ) {
+	$host = strtolower( (string) wp_parse_url( $target, PHP_URL_HOST ) );
+	return $host && in_array( $host, array_map( 'trim', explode( ',', AIWP_INCLUDE_LIVE_HOSTS ) ), true );
+}
+
 function aiwp_fetch_include( $target, $ttl, $trusted = false ) {
 	if ( 0 === strpos( $target, '/' ) ) {
 		$url = home_url( $target );
@@ -473,7 +487,7 @@ function aiwp_fetch_include( $target, $ttl, $trusted = false ) {
 		}
 	}
 	$key   = 'aiwp_inc_' . md5( $url );
-	$fresh = get_transient( $key );
+	$fresh = $ttl > 0 ? get_transient( $key ) : false;
 	if ( false !== $fresh ) {
 		return $fresh;
 	}
@@ -487,7 +501,9 @@ function aiwp_fetch_include( $target, $ttl, $trusted = false ) {
 	$code = wp_remote_retrieve_response_code( $response );
 	if ( ! is_wp_error( $response ) && 200 === $code ) {
 		$html = wp_remote_retrieve_body( $response );
-		set_transient( $key, $html, max( 60, $ttl ) );
+		if ( $ttl > 0 ) {
+			set_transient( $key, $html, max( 60, $ttl ) );
+		}
 		if ( $trusted ) { // the permanent last-good copy is only kept for includes written by trusted authors
 			update_option( $key . '_last_good', $html, false );
 		}
@@ -1808,7 +1824,7 @@ function aiwp_register_log_routes() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.12.0' );
+define( 'CSM_VERSION', '1.13.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
