@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.15.0
+ * Version:           1.16.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -2196,9 +2196,99 @@ function aiwp_render_salts_section() {
 	echo '<p><button type="submit" class="button" onclick="return confirm(' . esc_attr( wp_json_encode( 'Rotate the security keys now? Every user, you included, will be logged out immediately.' ) ) . ')">Rotate security keys</button></p></form>';
 }
 
+/* ------------------------------------------------------------------ bulk user cleanup by role */
+
+/*
+ * Deletes the users of one role in batches, e.g. thousands of subscribers imported years ago. Their content
+ * goes to the reassign user. Administrators, users who can manage options and the calling user are never
+ * deleted. expect_count must equal the live count of that role, so a stale preview cannot delete more.
+ * REST: GET ai-wp/v1/users/role-count?role=subscriber, POST ai-wp/v1/users/delete-by-role
+ * {role, expect_count, reassign, limit 1..500 default 200}. Single sites only.
+ */
+function aiwp_role_count( $role ) {
+	$q = new WP_User_Query( array( 'role' => $role, 'fields' => 'ID', 'number' => 1, 'count_total' => true ) );
+	return (int) $q->get_total();
+}
+
+function aiwp_role_check( $role ) {
+	if ( is_multisite() ) {
+		return new WP_Error( 'aiwp_multisite', 'Not available on multisite.', array( 'status' => 400 ) );
+	}
+	if ( '' === $role || ! get_role( $role ) ) {
+		return new WP_Error( 'aiwp_bad_role', 'Unknown role.', array( 'status' => 400 ) );
+	}
+	if ( 'administrator' === $role ) {
+		return new WP_Error( 'aiwp_bad_role', 'Administrators are never deleted in bulk.', array( 'status' => 400 ) );
+	}
+	return true;
+}
+
+function aiwp_delete_users_by_role( WP_REST_Request $req ) {
+	require_once ABSPATH . 'wp-admin/includes/user.php';
+	$role  = sanitize_key( (string) $req->get_param( 'role' ) );
+	$check = aiwp_role_check( $role );
+	if ( is_wp_error( $check ) ) {
+		return $check;
+	}
+	$reassign = (int) $req->get_param( 'reassign' );
+	$target   = get_userdata( $reassign );
+	if ( ! $target || in_array( $role, (array) $target->roles, true ) ) {
+		return new WP_Error( 'aiwp_bad_reassign', 'reassign must be an existing user outside that role.', array( 'status' => 400 ) );
+	}
+	$total = aiwp_role_count( $role );
+	if ( (int) $req->get_param( 'expect_count' ) !== $total ) {
+		return new WP_Error( 'aiwp_count_changed', 'expect_count does not match; nothing was deleted.', array( 'status' => 409, 'count' => $total ) );
+	}
+	$skip    = array();
+	$deleted = 0;
+	$ids     = get_users( array( 'role' => $role, 'fields' => 'ID', 'number' => (int) $req->get_param( 'limit' ), 'orderby' => 'ID' ) );
+	foreach ( $ids as $id ) {
+		$id   = (int) $id;
+		$user = get_userdata( $id );
+		if ( ! $user || get_current_user_id() === $id || $id === $reassign || user_can( $user, 'manage_options' ) ) {
+			$skip[] = $id;
+			continue;
+		}
+		if ( wp_delete_user( $id, $reassign ) ) {
+			$deleted++;
+		} else {
+			$skip[] = $id;
+		}
+	}
+	return array( 'role' => $role, 'deleted' => $deleted, 'skipped' => $skip, 'remaining' => aiwp_role_count( $role ) );
+}
+
+add_action( 'rest_api_init', 'aiwp_register_user_cleanup_routes' );
+function aiwp_register_user_cleanup_routes() {
+	$can = function () {
+		return current_user_can( 'manage_options' ) && current_user_can( 'delete_users' );
+	};
+	register_rest_route( 'ai-wp/v1', '/users/role-count', array(
+		'methods'             => 'GET',
+		'permission_callback' => $can,
+		'args'                => array( 'role' => array( 'required' => true, 'type' => 'string' ) ),
+		'callback'            => function ( $req ) {
+			$role  = sanitize_key( (string) $req->get_param( 'role' ) );
+			$check = aiwp_role_check( $role );
+			return is_wp_error( $check ) ? $check : array( 'role' => $role, 'count' => aiwp_role_count( $role ) );
+		},
+	) );
+	register_rest_route( 'ai-wp/v1', '/users/delete-by-role', array(
+		'methods'             => 'POST',
+		'permission_callback' => $can,
+		'args'                => array(
+			'role'         => array( 'required' => true, 'type' => 'string' ),
+			'expect_count' => array( 'required' => true, 'type' => 'integer', 'minimum' => 1 ),
+			'reassign'     => array( 'required' => true, 'type' => 'integer', 'minimum' => 1 ),
+			'limit'        => array( 'type' => 'integer', 'default' => 200, 'minimum' => 1, 'maximum' => 500 ),
+		),
+		'callback'            => 'aiwp_delete_users_by_role',
+	) );
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.15.0' );
+define( 'CSM_VERSION', '1.16.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

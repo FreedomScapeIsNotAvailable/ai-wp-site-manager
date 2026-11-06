@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.16.0
+- Bulk user cleanup: GET ai-wp/v1/users/role-count?role=subscriber and POST ai-wp/v1/users/delete-by-role {role, expect_count, reassign, limit 1..500, default 200} delete the users of one role in batches (e.g. subscribers imported years ago), giving their content to the reassign user. Administrators, users who can manage options and the calling user are never deleted; the administrator role is refused; expect_count must equal the live count (409 otherwise, nothing deleted). Needs manage_options and delete_users; single sites only. Built because the core batch endpoint is blocked by some server firewalls.
+
 ## 1.15.0
 - GET/POST ai-wp/v1/seo-meta/&lt;id&gt;: read and set the SEO title, meta description, canonical URL and noindex of one post or page, for Yoast SEO or Rank Math (whichever is active). Only the fields sent are changed, an empty string clears a field, noindex null returns to the site default. Yoast's indexable is rebuilt at once, so the new description is served without re-saving the page; the page cache of that post is purged. Needs edit_post on that post; 409 when no SEO plugin is active.
 
