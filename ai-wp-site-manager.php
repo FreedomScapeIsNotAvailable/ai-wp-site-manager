@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.14.0
+ * Version:           1.15.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -1009,6 +1009,171 @@ function aiwp_register_stub_shortcode_routes() {
 			'callback'            => function ( $req ) {
 				$res = aiwp_save_stub_shortcodes( $req->get_param( 'names' ) );
 				return is_wp_error( $res ) ? $res : array( 'names' => $res, 'count' => count( $res ) );
+			},
+		),
+	) );
+}
+
+/*
+ * SEO meta of one post or page, for whichever SEO plugin is active (Yoast SEO or Rank Math).
+ * Their meta keys are protected (underscore) or unregistered, so wp/v2 cannot write them.
+ * GET  ai-wp/v1/seo-meta/<id>  -> {provider, title, description, canonical, noindex}
+ * POST ai-wp/v1/seo-meta/<id>  {title?, description?, canonical?, noindex?}: only the fields sent are
+ * changed, "" clears a field, noindex null returns to the site default. Yoast's indexable is rebuilt
+ * so the new values show at once; the post's page cache is purged. Needs edit_post on that post.
+ */
+function aiwp_seo_provider() {
+	if ( defined( 'WPSEO_VERSION' ) ) {
+		return 'yoast';
+	}
+	if ( defined( 'RANK_MATH_VERSION' ) ) {
+		return 'rankmath';
+	}
+	return 'none';
+}
+
+function aiwp_seo_keys( $provider ) {
+	if ( 'yoast' === $provider ) {
+		return array( 'title' => '_yoast_wpseo_title', 'description' => '_yoast_wpseo_metadesc', 'canonical' => '_yoast_wpseo_canonical', 'noindex' => '_yoast_wpseo_meta-robots-noindex' );
+	}
+	return array( 'title' => 'rank_math_title', 'description' => 'rank_math_description', 'canonical' => 'rank_math_canonical_url', 'noindex' => 'rank_math_robots' );
+}
+
+function aiwp_seo_post( $id ) {
+	$post = get_post( (int) $id );
+	if ( ! $post || 'revision' === $post->post_type || ! is_post_type_viewable( $post->post_type ) ) {
+		return new WP_Error( 'aiwp_seo_no_post', 'No public post or page with this id.', array( 'status' => 404 ) );
+	}
+	return $post;
+}
+
+function aiwp_seo_read( $post ) {
+	$provider = aiwp_seo_provider();
+	$out      = array( 'id' => $post->ID, 'post_type' => $post->post_type, 'provider' => $provider );
+	if ( 'none' === $provider ) {
+		return $out;
+	}
+	$k = aiwp_seo_keys( $provider );
+	$out['title']       = (string) get_post_meta( $post->ID, $k['title'], true );
+	$out['description'] = (string) get_post_meta( $post->ID, $k['description'], true );
+	$out['canonical']   = (string) get_post_meta( $post->ID, $k['canonical'], true );
+	$robots             = get_post_meta( $post->ID, $k['noindex'], true );
+	if ( 'yoast' === $provider ) {
+		$out['noindex'] = '1' === (string) $robots ? true : ( '2' === (string) $robots ? false : null );
+	} else {
+		$robots         = is_array( $robots ) ? $robots : array();
+		$out['noindex'] = in_array( 'noindex', $robots, true ) ? true : ( in_array( 'index', $robots, true ) ? false : null );
+	}
+	return $out;
+}
+
+function aiwp_seo_write( $post, $params ) {
+	$provider = aiwp_seo_provider();
+	if ( 'none' === $provider ) {
+		return new WP_Error( 'aiwp_seo_no_plugin', 'Neither Yoast SEO nor Rank Math is active; nothing was changed.', array( 'status' => 409 ) );
+	}
+	$k      = aiwp_seo_keys( $provider );
+	$limits = array( 'title' => 200, 'description' => 500 );
+	$todo   = array();
+	foreach ( $limits as $field => $max ) {
+		if ( array_key_exists( $field, $params ) ) {
+			$val = sanitize_text_field( (string) $params[ $field ] );
+			if ( function_exists( 'mb_strlen' ) ? mb_strlen( $val ) > $max : strlen( $val ) > $max ) {
+				return new WP_Error( 'aiwp_seo_too_long', $field . ' is longer than ' . $max . ' characters; nothing was changed.', array( 'status' => 400 ) );
+			}
+			$todo[ $k[ $field ] ] = $val;
+		}
+	}
+	if ( array_key_exists( 'canonical', $params ) ) {
+		$url = trim( (string) $params['canonical'] );
+		if ( '' !== $url && ( ! wp_http_validate_url( $url ) || ! in_array( wp_parse_url( $url, PHP_URL_SCHEME ), array( 'http', 'https' ), true ) ) ) {
+			return new WP_Error( 'aiwp_seo_bad_url', 'canonical must be an absolute http(s) URL; nothing was changed.', array( 'status' => 400 ) );
+		}
+		$todo[ $k['canonical'] ] = '' === $url ? '' : esc_url_raw( $url );
+	}
+	if ( array_key_exists( 'noindex', $params ) ) {
+		$ni = $params['noindex'];
+		if ( 'yoast' === $provider ) {
+			$todo[ $k['noindex'] ] = null === $ni ? '' : ( $ni ? '1' : '2' );
+		} else {
+			$robots = get_post_meta( $post->ID, $k['noindex'], true );
+			$robots = array_values( array_diff( is_array( $robots ) ? $robots : array(), array( 'index', 'noindex' ) ) );
+			if ( null !== $ni ) {
+				$robots[] = $ni ? 'noindex' : 'index';
+			}
+			$todo[ $k['noindex'] ] = $robots;
+		}
+	}
+	if ( ! $todo ) {
+		return new WP_Error( 'aiwp_seo_nothing', 'Send at least one of title, description, canonical, noindex.', array( 'status' => 400 ) );
+	}
+	foreach ( $todo as $key => $val ) {
+		if ( '' === $val || array() === $val ) {
+			delete_post_meta( $post->ID, $key );
+		} else {
+			update_post_meta( $post->ID, $key, $val );
+		}
+	}
+	$refreshed = aiwp_seo_refresh_index( $post->ID, $provider );
+	do_action( 'litespeed_purge_post', $post->ID );
+	$out                    = aiwp_seo_read( $post );
+	$out['index_refreshed'] = $refreshed;
+	return $out;
+}
+
+/* Yoast serves the head from its indexables table, which is only rebuilt on a post save; rebuild it now. */
+function aiwp_seo_refresh_index( $post_id, $provider ) {
+	if ( 'yoast' !== $provider ) {
+		return true;
+	}
+	if ( ! function_exists( 'YoastSEO' ) || ! class_exists( '\Yoast\WP\SEO\Builders\Indexable_Builder' ) ) {
+		return false;
+	}
+	try {
+		$repo      = YoastSEO()->classes->get( \Yoast\WP\SEO\Repositories\Indexable_Repository::class );
+		$builder   = YoastSEO()->classes->get( \Yoast\WP\SEO\Builders\Indexable_Builder::class );
+		$indexable = $repo->find_by_id_and_type( $post_id, 'post', false );
+		return false !== $builder->build_for_id_and_type( $post_id, 'post', $indexable );
+	} catch ( \Throwable $e ) {
+		return false;
+	}
+}
+
+add_action( 'rest_api_init', 'aiwp_register_seo_meta_routes' );
+function aiwp_register_seo_meta_routes() {
+	$can = function ( $req ) {
+		return current_user_can( 'edit_post', (int) $req['id'] );
+	};
+	register_rest_route( 'ai-wp/v1', '/seo-meta/(?P<id>\d+)', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $can,
+			'callback'            => function ( $req ) {
+				$post = aiwp_seo_post( $req['id'] );
+				return is_wp_error( $post ) ? $post : aiwp_seo_read( $post );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $can,
+			'args'                => array(
+				'title'       => array( 'type' => 'string' ),
+				'description' => array( 'type' => 'string' ),
+				'canonical'   => array( 'type' => 'string' ),
+				'noindex'     => array( 'type' => array( 'boolean', 'null' ) ),
+			),
+			'callback'            => function ( $req ) {
+				$post = aiwp_seo_post( $req['id'] );
+				if ( is_wp_error( $post ) ) {
+					return $post;
+				}
+				$params = array();
+				foreach ( array( 'title', 'description', 'canonical', 'noindex' ) as $f ) {
+					if ( $req->has_param( $f ) ) {
+						$params[ $f ] = $req->get_param( $f );
+					}
+				}
+				return aiwp_seo_write( $post, $params );
 			},
 		),
 	) );
@@ -2033,7 +2198,7 @@ function aiwp_render_salts_section() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.14.0' );
+define( 'CSM_VERSION', '1.15.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

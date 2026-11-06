@@ -1,11 +1,11 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.14.0",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.14.0.zip",
+  "version": "1.15.0",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.15.0.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "sha256": "3e1dfa05a81bfc7bca42d77f868a9221e0bb88ba16290f80295eeb8c2b5704bd",
-  "changelog": "<h4>1.14.0</h4><ul><li>Security keys: GET ai-wp/v1/salts reports whether the eight AUTH/SECURE_AUTH/LOGGED_IN/NONCE KEY and SALT constants are plain define() lines in wp-config.php (never their values) and when they were last rotated; POST ai-wp/v1/salts/rotate replaces them with new 64-character random values, and Settings -> AI Site Manager has a \"Rotate security keys\" button. Every user is logged out; application passwords keep working.</li><li>Safe by refusal: a key that is missing, defined twice or loaded from somewhere else stops the rotation with nothing written. The new file is checked to parse, written to a 0600 temp file next to wp-config.php with the original permissions and renamed over it; opcache is invalidated and the LiteSpeed cache purged. No copy of wp-config.php is stored. Needs manage_options (manage_network_options on multisite).</li></ul>"
+  "sha256": "509439cd5bf59e04bb0c5a56bd309cb27e06239a42e66c79b4dcb0c680a2c4a8",
+  "changelog": "<h4>1.15.0</h4><ul><li>GET/POST ai-wp/v1/seo-meta/&lt;id&gt;: read and set the SEO title, meta description, canonical URL and noindex of one post or page, for Yoast SEO or Rank Math (whichever is active). Only the fields sent are changed, an empty string clears a field, noindex null returns to the site default. Yoast's indexable is rebuilt at once, so the new description is served without re-saving the page; the page cache of that post is purged. Needs edit_post on that post; 409 when no SEO plugin is active.</li></ul>"
 }
