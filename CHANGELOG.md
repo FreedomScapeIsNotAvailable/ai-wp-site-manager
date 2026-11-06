@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.14.0
+- Security keys: GET ai-wp/v1/salts reports whether the eight AUTH/SECURE_AUTH/LOGGED_IN/NONCE KEY and SALT constants are plain define() lines in wp-config.php (never their values) and when they were last rotated; POST ai-wp/v1/salts/rotate replaces them with new 64-character random values, and Settings -> AI Site Manager has a "Rotate security keys" button. Every user is logged out; application passwords keep working.
+- Safe by refusal: a key that is missing, defined twice or loaded from somewhere else stops the rotation with nothing written. The new file is checked to parse, written to a 0600 temp file next to wp-config.php with the original permissions and renamed over it; opcache is invalidated and the LiteSpeed cache purged. No copy of wp-config.php is stored. Needs manage_options (manage_network_options on multisite).
+
 ## 1.13.0
 - Includes from forms.bocp.eu (AIWP_INCLUDE_LIVE_HOSTS) are fetched fresh on every page view and the page is marked no-cache for LiteSpeed: a BOCP form carries a validation key that changes when the form is saved, so a cached copy failed on submit. The last good copy is still used if forms.bocp.eu does not answer. Other includes keep the 5-minute cache.
 

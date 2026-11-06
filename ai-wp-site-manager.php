@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.13.0
+ * Version:           1.14.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -722,6 +722,7 @@ function aiwp_settings_page() {
 	}
 	aiwp_render_app_passwords_section( $notice );
 	aiwp_render_redirects_section();
+	aiwp_render_salts_section();
 	echo '<h2 style="margin-top:2em">Content includes</h2><p class="description">Write <code>{INCLUDE:/some/path/}</code> in any page or post to insert the HTML that same-site URL returns (cached ' . esc_html( AIWP_INCLUDE_TTL / 60 ) . ' minutes).</p>';
 	echo '</div>';
 }
@@ -1761,6 +1762,7 @@ function aiwp_error_logging_uninstall() {
 	aiwp_error_logging_disable();
 	delete_site_option( AIWP_ERRLOG_FILE_OPTION );
 	delete_option( AIWP_STUB_SHORTCODES_OPTION );
+	delete_site_option( 'aiwp_salts_rotated' );
 }
 
 add_action( 'rest_api_init', 'aiwp_register_log_routes' );
@@ -1822,9 +1824,216 @@ function aiwp_register_log_routes() {
 	) );
 }
 
+/* ------------------------------------------------------------------ security keys (wp-config.php salts) */
+
+/*
+ * Rotates the eight AUTH / SECURE_AUTH / LOGGED_IN / NONCE KEY and SALT constants in wp-config.php, e.g. after
+ * an intrusion. Only plain define() lines that appear exactly once and hold the running value are replaced;
+ * anything else is refused and nothing is written. Values are never returned. Every user is logged out;
+ * application passwords keep working. REST: GET ai-wp/v1/salts, POST ai-wp/v1/salts/rotate; and a button
+ * in Settings -> AI Site Manager.
+ */
+define( 'AIWP_SALT_NAMES', 'AUTH_KEY,SECURE_AUTH_KEY,LOGGED_IN_KEY,NONCE_KEY,AUTH_SALT,SECURE_AUTH_SALT,LOGGED_IN_SALT,NONCE_SALT' );
+define( 'AIWP_SALTS_OPTION', 'aiwp_salts_rotated' );
+
+function aiwp_salts_can() {
+	return current_user_can( is_multisite() ? 'manage_network_options' : 'manage_options' );
+}
+
+/** Same lookup as wp-load.php: next to WordPress, or one folder up when that folder is not another install. */
+function aiwp_wp_config_path() {
+	if ( file_exists( ABSPATH . 'wp-config.php' ) ) {
+		return ABSPATH . 'wp-config.php';
+	}
+	$up = dirname( ABSPATH ) . '/wp-config.php';
+	return ( file_exists( $up ) && ! file_exists( dirname( ABSPATH ) . '/wp-settings.php' ) ) ? $up : null;
+}
+
+function aiwp_salt_literal_value( $quote, $raw ) {
+	if ( "'" === $quote ) {
+		return preg_replace_callback( '/\\\\([\\\\\'])/', function ( $m ) { return $m[1]; }, $raw );
+	}
+	return ( false === strpbrk( $raw, '\\$' ) ) ? $raw : null;
+}
+
+/** Per key: state ok | missing | duplicate | elsewhere, plus the offset and length of the quoted value when ok. */
+function aiwp_salts_scan( $src ) {
+	$found = array();
+	foreach ( explode( ',', AIWP_SALT_NAMES ) as $name ) {
+		$re = '/define\s*\(\s*([\'"])' . $name . '\1\s*,\s*([\'"])((?:(?!\2)[^\\\\]|\\\\.)*)\2\s*\)/s';
+		$n  = preg_match_all( $re, $src, $m, PREG_SET_ORDER | PREG_OFFSET_CAPTURE );
+		if ( 1 !== $n ) {
+			$found[ $name ] = array( 'state' => $n ? 'duplicate' : 'missing' );
+			continue;
+		}
+		$value = aiwp_salt_literal_value( $m[0][2][0], $m[0][3][0] );
+		$live  = defined( $name ) ? constant( $name ) : null;
+		$found[ $name ] = array(
+			'state'  => ( null !== $value && $value === $live ) ? 'ok' : 'elsewhere',
+			'offset' => $m[0][3][1],
+			'length' => strlen( $m[0][3][0] ),
+		);
+	}
+	return $found;
+}
+
+function aiwp_salts_state() {
+	$path = aiwp_wp_config_path();
+	$rot  = get_site_option( AIWP_SALTS_OPTION );
+	$out  = array( 'file' => $path, 'writable' => false, 'keys' => array(), 'ready' => false, 'rotated_at' => is_array( $rot ) ? $rot['at'] : null );
+	if ( ! $path || ! is_readable( $path ) ) {
+		return $out;
+	}
+	$out['writable'] = ! is_link( $path ) && is_writable( $path ) && is_writable( dirname( $path ) );
+	$ready           = $out['writable'];
+	foreach ( aiwp_salts_scan( (string) file_get_contents( $path ) ) as $name => $info ) {
+		$out['keys'][ $name ] = $info['state'];
+		$ready                = $ready && 'ok' === $info['state'];
+	}
+	$out['ready'] = $ready;
+	return $out;
+}
+
+function aiwp_salts_problem( $state ) {
+	if ( ! $state['file'] ) {
+		return 'wp-config.php was not found next to WordPress or one folder above it.';
+	}
+	if ( ! $state['writable'] ) {
+		return 'wp-config.php is not readable or writable by WordPress (or it is a symbolic link); change the keys in the hosting file manager instead.';
+	}
+	$bad = array();
+	foreach ( $state['keys'] as $name => $s ) {
+		if ( 'ok' !== $s ) {
+			$bad[] = $name . ' (' . $s . ')';
+		}
+	}
+	return $bad ? 'These keys are not plain define() lines in wp-config.php: ' . implode( ', ', $bad ) . '. missing = not in the file, duplicate = more than one line, elsewhere = the running value comes from another place.' : '';
+}
+
+function aiwp_salt_generate() {
+	$chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#%&()*+,-./:;<=>?@[]^_{|}~';
+	$max   = strlen( $chars ) - 1;
+	$s     = '';
+	for ( $i = 0; $i < 64; $i++ ) {
+		$s .= $chars[ random_int( 0, $max ) ];
+	}
+	return $s;
+}
+
+function aiwp_salts_rotate() {
+	$state = aiwp_salts_state();
+	if ( ! $state['ready'] ) {
+		return new WP_Error( 'aiwp_salts_not_ready', 'Nothing was changed. ' . aiwp_salts_problem( $state ), array( 'status' => 409, 'state' => $state ) );
+	}
+	$path  = $state['file'];
+	$src   = (string) file_get_contents( $path );
+	$spots = array();
+	foreach ( aiwp_salts_scan( $src ) as $name => $info ) {
+		if ( 'ok' !== $info['state'] ) {
+			return new WP_Error( 'aiwp_salts_changed', 'Nothing was changed: wp-config.php changed while it was being read. Try again.', array( 'status' => 409 ) );
+		}
+		$spots[] = $info;
+	}
+	usort( $spots, function ( $a, $b ) { return $b['offset'] - $a['offset']; } );
+	$new = $src;
+	foreach ( $spots as $s ) {
+		$new = substr_replace( $new, aiwp_salt_generate(), $s['offset'], $s['length'] );
+	}
+	try {
+		token_get_all( $new, TOKEN_PARSE );
+	} catch ( ParseError $e ) {
+		return new WP_Error( 'aiwp_salts_parse', 'Nothing was changed: the new wp-config.php would not parse (' . $e->getMessage() . ').', array( 'status' => 500 ) );
+	}
+	$tmp = dirname( $path ) . '/.aiwp-wpconfig-' . wp_generate_password( 12, false ) . '.php';
+	$fh  = @fopen( $tmp, 'x' );
+	if ( ! $fh ) {
+		return new WP_Error( 'aiwp_salts_write', 'Nothing was changed: could not create a temporary file next to wp-config.php.', array( 'status' => 500 ) );
+	}
+	@chmod( $tmp, 0600 );
+	$ok = ( strlen( $new ) === fwrite( $fh, $new ) );
+	$ok = fclose( $fh ) && $ok;
+	if ( $ok ) {
+		@chmod( $tmp, fileperms( $path ) & 0777 );
+		$ok = @rename( $tmp, $path );
+	}
+	if ( ! $ok ) {
+		@unlink( $tmp );
+		return new WP_Error( 'aiwp_salts_write', 'Nothing was changed: writing wp-config.php failed.', array( 'status' => 500 ) );
+	}
+	if ( function_exists( 'opcache_invalidate' ) ) {
+		@opcache_invalidate( $path, true );
+	}
+	$at = gmdate( 'c' );
+	update_site_option( AIWP_SALTS_OPTION, array( 'at' => $at, 'user' => get_current_user_id() ) );
+	do_action( 'litespeed_purge_all' );
+	return array(
+		'rotated'    => explode( ',', AIWP_SALT_NAMES ),
+		'file'       => $path,
+		'rotated_at' => $at,
+		'note'       => 'Every user is logged out; application passwords keep working.',
+	);
+}
+
+add_action( 'rest_api_init', 'aiwp_register_salt_routes' );
+function aiwp_register_salt_routes() {
+	register_rest_route( 'ai-wp/v1', '/salts', array(
+		'methods'             => 'GET',
+		'permission_callback' => 'aiwp_salts_can',
+		'callback'            => function () {
+			return aiwp_salts_state();
+		},
+	) );
+	register_rest_route( 'ai-wp/v1', '/salts/rotate', array(
+		'methods'             => 'POST',
+		'permission_callback' => 'aiwp_salts_can',
+		'callback'            => function () {
+			return aiwp_salts_rotate();
+		},
+	) );
+}
+
+add_action( 'admin_post_aiwp_rotate_salts', 'aiwp_handle_salts_form' );
+function aiwp_handle_salts_form() {
+	if ( ! aiwp_salts_can() ) {
+		wp_die( 'Not allowed.' );
+	}
+	check_admin_referer( 'aiwp_rotate_salts' );
+	$res = aiwp_salts_rotate();
+	set_transient(
+		'aiwp_notice_' . get_current_user_id(),
+		is_wp_error( $res )
+			? array( 'status' => 'error', 'file' => '', 'message' => $res->get_error_message() )
+			: array( 'status' => 'rotated', 'file' => 'security keys; every user was logged out', 'message' => '' ),
+		600
+	);
+	$back = admin_url( 'options-general.php?page=ai-wp-site-manager#salts' );
+	wp_safe_redirect( is_wp_error( $res ) ? $back : wp_login_url( $back ) );
+	exit;
+}
+
+/** Rendered inside aiwp_settings_page(). */
+function aiwp_render_salts_section() {
+	if ( ! aiwp_salts_can() ) {
+		return;
+	}
+	$state = aiwp_salts_state();
+	echo '<h2 id="salts" style="margin-top:2em">Security keys (salts)</h2>';
+	echo '<p class="description">Replaces the eight secret keys in wp-config.php with new random values. Every logged-in user, you included, is logged out at once; application passwords keep working. Use it after a suspected intrusion, or when someone who had server or admin access leaves.</p>';
+	$when = $state['rotated_at'] ? get_date_from_gmt( gmdate( 'Y-m-d H:i:s', strtotime( $state['rotated_at'] ) ), 'Y-m-d H:i' ) : 'never by this plugin';
+	echo '<p><strong>File:</strong> <code>' . esc_html( $state['file'] ? $state['file'] : 'not found' ) . '</code> &middot; last rotated: ' . esc_html( $when ) . '</p>';
+	if ( ! $state['ready'] ) {
+		echo '<div class="notice notice-warning inline"><p>' . esc_html( aiwp_salts_problem( $state ) ) . '</p></div>';
+		return;
+	}
+	echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+	wp_nonce_field( 'aiwp_rotate_salts' );
+	echo '<input type="hidden" name="action" value="aiwp_rotate_salts">';
+	echo '<p><button type="submit" class="button" onclick="return confirm(' . esc_attr( wp_json_encode( 'Rotate the security keys now? Every user, you included, will be logged out immediately.' ) ) . ')">Rotate security keys</button></p></form>';
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.13.0' );
+define( 'CSM_VERSION', '1.14.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );
