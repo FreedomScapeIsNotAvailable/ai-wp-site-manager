@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.16.0
+ * Version:           1.17.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -723,6 +723,7 @@ function aiwp_settings_page() {
 	aiwp_render_app_passwords_section( $notice );
 	aiwp_render_redirects_section();
 	aiwp_render_salts_section();
+	aiwp_render_security_section();
 	echo '<h2 style="margin-top:2em">Content includes</h2><p class="description">Write <code>{INCLUDE:/some/path/}</code> in any page or post to insert the HTML that same-site URL returns (cached ' . esc_html( AIWP_INCLUDE_TTL / 60 ) . ' minutes).</p>';
 	echo '</div>';
 }
@@ -1819,7 +1820,18 @@ function aiwp_log_prepare() {
 	if ( '' !== $file && @is_dir( dirname( $file ) ) && ! @is_link( dirname( $file ) ) && ! @is_link( $file ) && is_writable( dirname( $file ) ) ) {
 		return $file;
 	}
-	foreach ( array( dirname( ABSPATH ) . '/aiwp-logs', WP_CONTENT_DIR . '/aiwp-logs' ) as $dir ) {
+	$dir = aiwp_private_dir( 'aiwp-logs' );
+	if ( null === $dir ) {
+		return new WP_Error( 'aiwp_log_dir', 'No writable folder for the error log (tried ' . dirname( ABSPATH ) . '/aiwp-logs and ' . WP_CONTENT_DIR . '/aiwp-logs).', array( 'status' => 500 ) );
+	}
+	$file = $dir . '/aiwp-errors-' . wp_generate_password( 16, false ) . '.log';
+	update_site_option( AIWP_ERRLOG_FILE_OPTION, $file );
+	return $file;
+}
+
+/** A folder for the plugin's own files: outside the web root when possible, else under wp-content with deny rules. No symlinks. */
+function aiwp_private_dir( $name ) {
+	foreach ( array( dirname( ABSPATH ) . '/' . $name, WP_CONTENT_DIR . '/' . $name ) as $dir ) {
 		if ( @is_link( $dir ) || ( ! @is_dir( $dir ) && ! wp_mkdir_p( $dir ) ) || @is_link( $dir ) || ! is_writable( $dir ) ) {
 			continue;
 		}
@@ -1827,11 +1839,47 @@ function aiwp_log_prepare() {
 		if ( ! aiwp_log_dir_protect( $dir ) ) {
 			continue;
 		}
-		$file = $dir . '/aiwp-errors-' . wp_generate_password( 16, false ) . '.log';
-		update_site_option( AIWP_ERRLOG_FILE_OPTION, $file );
-		return $file;
+		return $dir;
 	}
-	return new WP_Error( 'aiwp_log_dir', 'No writable folder for the error log (tried ' . dirname( ABSPATH ) . '/aiwp-logs and ' . WP_CONTENT_DIR . '/aiwp-logs).', array( 'status' => 500 ) );
+	return null;
+}
+
+/**
+ * Replaces a file through a temporary file and rename(), keeping its permissions. With $in_place_fallback, a folder that
+ * is not writable falls back to a locked rewrite of the file itself. True, or a WP_Error.
+ */
+function aiwp_atomic_write( $path, $content, $in_place_fallback = true ) {
+	$exists = file_exists( $path );
+	$tmp    = dirname( $path ) . '/.aiwp-tmp-' . wp_generate_password( 12, false ) . '.php';
+	$fh     = @fopen( $tmp, 'x' );
+	if ( $fh ) {
+		@chmod( $tmp, 0600 );
+		$ok = ( strlen( $content ) === fwrite( $fh, $content ) );
+		$ok = fclose( $fh ) && $ok;
+		if ( $ok ) {
+			@chmod( $tmp, $exists ? ( fileperms( $path ) & 0777 ) : 0644 );
+			$ok = @rename( $tmp, $path );
+		}
+		if ( ! $ok ) {
+			@unlink( $tmp );
+		}
+	} elseif ( $in_place_fallback && $exists && is_writable( $path ) ) {
+		$fh = @fopen( $path, 'c' );
+		$ok = $fh && flock( $fh, LOCK_EX ) && ftruncate( $fh, 0 ) && strlen( $content ) === fwrite( $fh, $content ) && fflush( $fh );
+		if ( $fh ) {
+			flock( $fh, LOCK_UN );
+			fclose( $fh );
+		}
+	} else {
+		$ok = false;
+	}
+	if ( ! $ok ) {
+		return new WP_Error( 'aiwp_write', 'Could not write ' . $path . '.', array( 'status' => 500 ) );
+	}
+	if ( function_exists( 'opcache_invalidate' ) ) {
+		@opcache_invalidate( $path, true );
+	}
+	return true;
 }
 
 function aiwp_errlog_mu_source() {
@@ -1928,6 +1976,10 @@ function aiwp_error_logging_uninstall() {
 	delete_site_option( AIWP_ERRLOG_FILE_OPTION );
 	delete_option( AIWP_STUB_SHORTCODES_OPTION );
 	delete_site_option( 'aiwp_salts_rotated' );
+	aiwp_rescue_uninstall();
+	aiwp_file_backups_purge();
+	delete_site_option( AIWP_RESCUE_OPTION );
+	delete_site_option( AIWP_SECURITY_OPTION );
 }
 
 add_action( 'rest_api_init', 'aiwp_register_log_routes' );
@@ -2109,24 +2161,8 @@ function aiwp_salts_rotate() {
 	} catch ( ParseError $e ) {
 		return new WP_Error( 'aiwp_salts_parse', 'Nothing was changed: the new wp-config.php would not parse (' . $e->getMessage() . ').', array( 'status' => 500 ) );
 	}
-	$tmp = dirname( $path ) . '/.aiwp-wpconfig-' . wp_generate_password( 12, false ) . '.php';
-	$fh  = @fopen( $tmp, 'x' );
-	if ( ! $fh ) {
-		return new WP_Error( 'aiwp_salts_write', 'Nothing was changed: could not create a temporary file next to wp-config.php.', array( 'status' => 500 ) );
-	}
-	@chmod( $tmp, 0600 );
-	$ok = ( strlen( $new ) === fwrite( $fh, $new ) );
-	$ok = fclose( $fh ) && $ok;
-	if ( $ok ) {
-		@chmod( $tmp, fileperms( $path ) & 0777 );
-		$ok = @rename( $tmp, $path );
-	}
-	if ( ! $ok ) {
-		@unlink( $tmp );
+	if ( true !== aiwp_atomic_write( $path, $new, false ) ) {
 		return new WP_Error( 'aiwp_salts_write', 'Nothing was changed: writing wp-config.php failed.', array( 'status' => 500 ) );
-	}
-	if ( function_exists( 'opcache_invalidate' ) ) {
-		@opcache_invalidate( $path, true );
 	}
 	$at = gmdate( 'c' );
 	update_site_option( AIWP_SALTS_OPTION, array( 'at' => $at, 'user' => get_current_user_id() ) );
@@ -2286,9 +2322,984 @@ function aiwp_register_user_cleanup_routes() {
 	) );
 }
 
+/* ------------------------------------------------------------------ security: managing-server IP lock */
+
+/*
+ * The application passwords the managing server uses ("claimed" through ai-wp/v1/security/claim) are accepted only from
+ * the managing server's addresses. Every other application password behaves as before. Mode off | report (log would-be
+ * refusals only) | on. Addresses come from REMOTE_ADDR; a forwarded address is believed only when the request was
+ * relayed by this server itself (Imunify WebShield runs on the web server), and refused when the forwarded headers disagree.
+ */
+if ( ! defined( 'AIWP_DEFAULT_API_IPS' ) ) {
+	define( 'AIWP_DEFAULT_API_IPS', '217.156.42.4' );
+}
+define( 'AIWP_SECURITY_OPTION', 'aiwp_security' );
+define( 'AIWP_SECURITY_REPORT_MAX', 50 );
+
+function aiwp_site_admin_can() {
+	return current_user_can( is_multisite() ? 'manage_network_options' : 'manage_options' );
+}
+
+/** Canonical text form; an IPv4-mapped IPv6 address (::ffff:a.b.c.d) becomes plain IPv4. '' when not an address. */
+function aiwp_ip_normalize( $ip ) {
+	$ip = trim( (string) $ip );
+	if ( false !== strpos( $ip, "\0" ) ) {
+		return '';
+	}
+	$bin = @inet_pton( $ip );
+	if ( false === $bin ) {
+		return '';
+	}
+	if ( 16 === strlen( $bin ) && 0 === strpos( $bin, str_repeat( "\0", 10 ) . "\xff\xff" ) ) {
+		$bin = substr( $bin, 12 );
+	}
+	return (string) inet_ntop( $bin );
+}
+
+/** True when the connection comes from this web server itself (a local relay such as Imunify WebShield). */
+function aiwp_remote_is_this_server( $remote ) {
+	$self = aiwp_ip_normalize( isset( $_SERVER['SERVER_ADDR'] ) ? $_SERVER['SERVER_ADDR'] : '' );
+	return '' !== $remote && ( $remote === $self || '127.0.0.1' === $remote || '::1' === $remote );
+}
+
+/** Every address named by a proxy header, unparsed. */
+function aiwp_forwarded_ips() {
+	$found = array();
+	foreach ( array( 'HTTP_X_REAL_IP', 'HTTP_X_CLIENT_IP', 'HTTP_TRUE_CLIENT_IP', 'HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR' ) as $h ) {
+		if ( ! empty( $_SERVER[ $h ] ) ) {
+			foreach ( explode( ',', (string) $_SERVER[ $h ] ) as $v ) {
+				$found[] = $v;
+			}
+		}
+	}
+	if ( ! empty( $_SERVER['HTTP_FORWARDED'] ) && preg_match_all( '/for=\s*"?\[?([^\]";,\s]+)/i', (string) $_SERVER['HTTP_FORWARDED'], $m ) ) {
+		foreach ( $m[1] as $v ) {
+			$found[] = $v;
+		}
+	}
+	return $found;
+}
+
+/** The caller's address for the lock, or '' when it cannot be decided. */
+function aiwp_client_ip() {
+	$remote = aiwp_ip_normalize( isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '' );
+	$fwd    = aiwp_forwarded_ips();
+	if ( ! $fwd || ! aiwp_remote_is_this_server( $remote ) ) {
+		return $remote;
+	}
+	$ips = array();
+	foreach ( $fwd as $v ) {
+		$ips[ aiwp_ip_normalize( $v ) ] = true;
+	}
+	return ( 1 === count( $ips ) && ! isset( $ips[''] ) ) ? (string) key( $ips ) : '';
+}
+
+function aiwp_security_get() {
+	$s = get_site_option( AIWP_SECURITY_OPTION );
+	return array_merge( array( 'mode' => 'off', 'ips' => null, 'uuids' => array(), 'report' => array() ), is_array( $s ) ? $s : array() );
+}
+
+function aiwp_security_save( $s ) {
+	update_site_option( AIWP_SECURITY_OPTION, $s );
+	aiwp_rescue_sync();
+}
+
+/** Managing-server addresses: the AIWP_API_IPS constant from wp-config.php, else the saved list, else the default. Empty = nobody. */
+function aiwp_api_ips() {
+	if ( defined( 'AIWP_API_IPS' ) ) {
+		$list = AIWP_API_IPS;
+	} else {
+		$s    = aiwp_security_get();
+		$list = is_array( $s['ips'] ) ? implode( ',', $s['ips'] ) : AIWP_DEFAULT_API_IPS;
+	}
+	$out = array();
+	foreach ( preg_split( '/[\s,]+/', (string) $list ) as $ip ) {
+		$ip = aiwp_ip_normalize( $ip );
+		if ( '' !== $ip ) {
+			$out[] = $ip;
+		}
+	}
+	return array_values( array_unique( $out ) );
+}
+
+function aiwp_request_from_api_ip() {
+	$ip = aiwp_client_ip();
+	return '' !== $ip && in_array( $ip, aiwp_api_ips(), true );
+}
+
+add_action( 'wp_authenticate_application_password_errors', 'aiwp_ip_lock_check', 10, 3 );
+function aiwp_ip_lock_check( $error, $user, $item ) {
+	$s = aiwp_security_get();
+	if ( 'off' === $s['mode'] || empty( $item['uuid'] ) || ! in_array( $item['uuid'], (array) $s['uuids'], true ) || aiwp_request_from_api_ip() ) {
+		return;
+	}
+	array_unshift( $s['report'], array(
+		'at'        => gmdate( 'c' ),
+		'remote'    => isset( $_SERVER['REMOTE_ADDR'] ) ? substr( (string) $_SERVER['REMOTE_ADDR'], 0, 64 ) : '',
+		'seen_as'   => aiwp_client_ip(),
+		'forwarded' => substr( implode( ',', aiwp_forwarded_ips() ), 0, 200 ),
+		'name'      => isset( $item['name'] ) ? (string) $item['name'] : '',
+		'refused'   => 'on' === $s['mode'],
+	) );
+	$s['report'] = array_slice( $s['report'], 0, AIWP_SECURITY_REPORT_MAX );
+	update_site_option( AIWP_SECURITY_OPTION, $s );
+	if ( 'on' === $s['mode'] ) {
+		$error->add( 'aiwp_ip_locked', 'This application password is only accepted from the managing server.' );
+	}
+}
+
+function aiwp_current_app_password_uuid() {
+	return function_exists( 'rest_get_authenticated_app_password' ) ? (string) rest_get_authenticated_app_password() : '';
+}
+
+function aiwp_claimed_passwords( $s ) {
+	$out = array();
+	foreach ( get_users( array( 'role__in' => array( 'administrator' ), 'fields' => 'ID' ) ) as $uid ) {
+		foreach ( WP_Application_Passwords::get_user_application_passwords( (int) $uid ) as $item ) {
+			if ( in_array( $item['uuid'], (array) $s['uuids'], true ) ) {
+				$out[] = array( 'uuid' => $item['uuid'], 'name' => $item['name'], 'user_id' => (int) $uid, 'last_ip' => $item['last_ip'] );
+			}
+		}
+	}
+	return $out;
+}
+
+function aiwp_security_state() {
+	$s = aiwp_security_get();
+	return array(
+		'mode'              => $s['mode'],
+		'ips'               => aiwp_api_ips(),
+		'ips_from_constant' => defined( 'AIWP_API_IPS' ),
+		'server_addr'       => aiwp_ip_normalize( isset( $_SERVER['SERVER_ADDR'] ) ? $_SERVER['SERVER_ADDR'] : '' ),
+		'claimed'           => aiwp_claimed_passwords( $s ),
+		'report'            => array_slice( $s['report'], 0, 20 ),
+		'request'           => array( 'seen_as' => aiwp_client_ip(), 'allowed' => aiwp_request_from_api_ip(), 'app_password_uuid' => aiwp_current_app_password_uuid() ),
+		'xmlrpc_enabled'    => aiwp_xmlrpc_needed(),
+		'alert_email'       => AIWP_ALERT_EMAIL,
+		'rescue'            => aiwp_rescue_state(),
+	);
+}
+
+function aiwp_security_claim() {
+	if ( ! aiwp_request_from_api_ip() ) {
+		return new WP_Error( 'aiwp_not_api_ip', 'Only the managing server may claim a password.', array( 'status' => 403 ) );
+	}
+	$uuid = aiwp_current_app_password_uuid();
+	if ( '' === $uuid ) {
+		return new WP_Error( 'aiwp_no_app_password', 'Call this route with the application password to claim.', array( 'status' => 400 ) );
+	}
+	$s = aiwp_security_get();
+	if ( ! in_array( $uuid, (array) $s['uuids'], true ) ) {
+		$s['uuids'][] = $uuid;
+	}
+	if ( 'off' === $s['mode'] ) {
+		$s['mode'] = 'report';
+	}
+	aiwp_security_save( $s );
+	return aiwp_security_state();
+}
+
+function aiwp_security_set_mode( $mode ) {
+	if ( ! in_array( $mode, array( 'off', 'report', 'on' ), true ) ) {
+		return new WP_Error( 'aiwp_bad_mode', 'mode is off, report or on.', array( 'status' => 400 ) );
+	}
+	$s = aiwp_security_get();
+	if ( 'on' === $mode && ! ( aiwp_request_from_api_ip() && in_array( aiwp_current_app_password_uuid(), (array) $s['uuids'], true ) ) ) {
+		return new WP_Error( 'aiwp_lock_self_check', 'The lock is switched on only by a claimed application password calling from a managing-server address, so the switch itself proves the lock lets that call through.', array( 'status' => 409, 'request' => aiwp_security_state()['request'] ) );
+	}
+	$s['mode'] = $mode;
+	aiwp_security_save( $s );
+	return aiwp_security_state();
+}
+
+add_action( 'rest_api_init', 'aiwp_register_security_routes' );
+function aiwp_register_security_routes() {
+	register_rest_route( 'ai-wp/v1', '/security', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => 'aiwp_site_admin_can',
+			'callback'            => 'aiwp_security_state',
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => 'aiwp_site_admin_can',
+			'args'                => array( 'mode' => array( 'required' => true, 'type' => 'string' ) ),
+			'callback'            => function ( $req ) {
+				return aiwp_security_set_mode( (string) $req->get_param( 'mode' ) );
+			},
+		),
+	) );
+	register_rest_route( 'ai-wp/v1', '/security/claim', array(
+		'methods'             => 'POST',
+		'permission_callback' => 'aiwp_site_admin_can',
+		'callback'            => 'aiwp_security_claim',
+	) );
+}
+
+/* ------------------------------------------------------------------ security: public user data, XML-RPC */
+
+/*
+ * Visitors no longer see login slugs: user REST answers drop slug and link, slug/search lookups are ignored, ?author=N is
+ * a 404 (only with pretty permalinks, where it is not the normal author link), no users sitemap, no oEmbed author_url.
+ */
+add_filter( 'rest_prepare_user', 'aiwp_hide_user_slug', 10, 3 );
+function aiwp_hide_user_slug( $response, $user, $request ) {
+	if ( is_user_logged_in() || ! ( $response instanceof WP_REST_Response ) ) {
+		return $response;
+	}
+	$data = $response->get_data();
+	unset( $data['slug'], $data['link'] );
+	$response->set_data( $data );
+	return $response;
+}
+
+add_filter( 'rest_user_query', 'aiwp_limit_user_query', 10, 2 );
+function aiwp_limit_user_query( $args, $request ) {
+	if ( ! is_user_logged_in() ) {
+		unset( $args['search'], $args['search_columns'], $args['nicename__in'], $args['login__in'] );
+	}
+	return $args;
+}
+
+add_action( 'template_redirect', 'aiwp_block_author_query', 1 );
+function aiwp_block_author_query() {
+	if ( is_user_logged_in() || ! isset( $_GET['author'] ) || ! get_option( 'permalink_structure' ) ) {
+		return;
+	}
+	global $wp_query;
+	$wp_query->set_404();
+	status_header( 404 );
+	nocache_headers();
+	remove_action( 'template_redirect', 'redirect_canonical' );
+}
+
+add_filter( 'wp_sitemaps_add_provider', function ( $provider, $name ) {
+	return 'users' === $name ? false : $provider;
+}, 10, 2 );
+add_filter( 'oembed_response_data', function ( $data ) {
+	unset( $data['author_url'] );
+	return $data;
+} );
+
+/* XML-RPC stays only where the Jetpack connection (Jetpack, WooPayments, Jetpack Backup, Boost...) needs it. */
+function aiwp_xmlrpc_needed() {
+	return (bool) apply_filters( 'aiwp_keep_xmlrpc', class_exists( 'Jetpack' ) || class_exists( 'Automattic\Jetpack\Connection\Manager' ) );
+}
+
+add_filter( 'xmlrpc_enabled', function ( $enabled ) {
+	return aiwp_xmlrpc_needed() ? $enabled : false;
+} );
+add_filter( 'xmlrpc_methods', function ( $methods ) {
+	return aiwp_xmlrpc_needed() ? $methods : array();
+} );
+add_filter( 'wp_headers', function ( $headers ) {
+	if ( ! aiwp_xmlrpc_needed() ) {
+		unset( $headers['X-Pingback'] );
+	}
+	return $headers;
+} );
+
+/* ------------------------------------------------------------------ security: e-mail alerts */
+
+/* New administrator, administrator role added, super admin granted, new application password: one mail at the end of the request to the site's admin address and the team, at most AIWP_ALERT_MAX_PER_HOUR an hour. */
+if ( ! defined( 'AIWP_ALERT_EMAIL' ) ) {
+	define( 'AIWP_ALERT_EMAIL', 'alerts@reallife.solutions' );
+}
+define( 'AIWP_ALERT_MAX_PER_HOUR', 10 );
+
+add_action( 'set_user_role', function ( $user_id, $role, $old_roles ) {
+	if ( 'administrator' === $role && ! in_array( 'administrator', (array) $old_roles, true ) ) {
+		aiwp_alert_queue( 'New administrator', $user_id );
+	}
+}, 10, 3 );
+add_action( 'add_user_role', function ( $user_id, $role ) {
+	if ( 'administrator' === $role ) {
+		aiwp_alert_queue( 'Administrator role added', $user_id );
+	}
+}, 10, 2 );
+add_action( 'granted_super_admin', function ( $user_id ) {
+	aiwp_alert_queue( 'Super admin granted', $user_id );
+} );
+add_action( 'wp_create_application_password', function ( $user_id, $item ) {
+	aiwp_alert_queue( 'New application password "' . ( isset( $item['name'] ) ? $item['name'] : '' ) . '"', $user_id );
+}, 10, 2 );
+
+function aiwp_alert_queue( $event, $user_id ) {
+	global $aiwp_alerts;
+	if ( empty( $aiwp_alerts ) ) {
+		$aiwp_alerts = array();
+		add_action( 'shutdown', 'aiwp_alert_send', PHP_INT_MAX );
+	}
+	$user  = get_userdata( (int) $user_id );
+	$actor = function_exists( 'wp_get_current_user' ) ? wp_get_current_user() : null;
+	$via   = '';
+	$uuid  = aiwp_current_app_password_uuid();
+	if ( $actor && $actor->ID && '' !== $uuid ) {
+		$item = WP_Application_Passwords::get_user_application_password( $actor->ID, $uuid );
+		$via  = $item ? ' with application password "' . $item['name'] . '"' : ' with an application password';
+	}
+	$aiwp_alerts[] = $event . ': ' . ( $user ? $user->user_login . ' (id ' . $user->ID . ', ' . $user->user_email . ')' : 'user id ' . (int) $user_id )
+		. "\n  by: " . ( $actor && $actor->ID ? $actor->user_login . $via : 'no logged-in user (registration, cron or command line)' )
+		. "\n  from IP: " . ( isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : 'none' )
+		. "\n  at: " . gmdate( 'Y-m-d H:i:s' ) . ' UTC';
+}
+
+function aiwp_alert_send() {
+	global $aiwp_alerts;
+	if ( empty( $aiwp_alerts ) ) {
+		return;
+	}
+	$sent = (int) get_transient( 'aiwp_alerts_sent' );
+	if ( $sent >= AIWP_ALERT_MAX_PER_HOUR ) {
+		return;
+	}
+	set_transient( 'aiwp_alerts_sent', $sent + 1, HOUR_IN_SECONDS );
+	$events      = $aiwp_alerts;
+	$aiwp_alerts = array();
+	if ( function_exists( 'fastcgi_finish_request' ) ) {
+		fastcgi_finish_request();
+	} elseif ( function_exists( 'litespeed_finish_request' ) ) {
+		litespeed_finish_request();
+	}
+	$host = (string) wp_parse_url( home_url(), PHP_URL_HOST );
+	$to   = array_values( array_unique( array_filter( array( (string) get_option( 'admin_email' ), AIWP_ALERT_EMAIL ) ) ) );
+	$body = 'Security alert from ' . home_url( '/' ) . "\n\n" . implode( "\n\n", $events )
+		. "\n\nIf you did not expect this, check Users in wp-admin and Settings -> AI Site Manager.\n-- AI WP Site Manager " . CSM_VERSION;
+	wp_mail( $to, '[' . $host . '] Security alert: ' . strtok( $events[0], ':' ) . ( count( $events ) > 1 ? ' (+' . ( count( $events ) - 1 ) . ' more)' : '' ), $body );
+}
+
+/* ------------------------------------------------------------------ files: read, patch, delete, restore */
+
+/*
+ * ai-wp/v1/files?path=themes/x/functions.php (GET), files/patch {path, expect, replacements:[{find, replace}]},
+ * files/delete {path, expect}, files/restore {path}. Paths start with themes/, plugins/, mu-plugins/ or root/.
+ * Only existing files, only AIWP_FILE_EXTENSIONS, no dot-files; in the web root only .htaccess (patch) and
+ * index.html / index.htm (delete). Always from a managing-server address, whatever the lock mode. expect = sha256 of
+ * the content that was read; every find must occur exactly once. PHP is parsed before saving. After saving, the home
+ * page and /wp-json/ are requested; if they answered before and fail now, the previous version is put back at once.
+ * The last AIWP_FILE_BACKUPS_KEEP versions of each file are kept as .bak files in the plugin's private folder.
+ */
+define( 'AIWP_FILE_EXTENSIONS', 'php,css,js,json,txt,html,htm' );
+define( 'AIWP_ROOT_DELETE', 'index.html,index.htm' );
+define( 'AIWP_FILE_MAX_BYTES', 2097152 );
+define( 'AIWP_FILE_BACKUPS_OPTION', 'aiwp_file_backups' );
+define( 'AIWP_FILE_BACKUPS_KEEP', 5 );
+
+function aiwp_file_bases() {
+	return array(
+		'themes'     => array( get_theme_root(), 'edit_themes' ),
+		'plugins'    => array( WP_PLUGIN_DIR, 'edit_plugins' ),
+		'mu-plugins' => array( WPMU_PLUGIN_DIR, 'edit_plugins' ),
+		'root'       => array( aiwp_root_dir(), 'edit_plugins' ),
+	);
+}
+
+/** $op read | patch | delete | restore. Returns rel, path, exists, or a WP_Error. */
+function aiwp_file_resolve( $rel, $op ) {
+	if ( false !== strpos( (string) $rel, "\0" ) ) {
+		return new WP_Error( 'aiwp_bad_path', 'NUL bytes are refused.', array( 'status' => 400 ) );
+	}
+	$parts = explode( '/', trim( str_replace( '\\', '/', (string) $rel ), '/' ) );
+	$base  = array_shift( $parts );
+	$bases = aiwp_file_bases();
+	if ( ! isset( $bases[ $base ] ) || ! $parts ) {
+		return new WP_Error( 'aiwp_bad_path', 'path starts with themes/, plugins/, mu-plugins/ or root/.', array( 'status' => 400 ) );
+	}
+	if ( 'read' !== $op && 'plugins' === $base && dirname( plugin_basename( __FILE__ ) ) === $parts[0] ) {
+		return new WP_Error( 'aiwp_file_self', 'This plugin\'s own files are changed only by its release updates.', array( 'status' => 403 ) );
+	}
+	foreach ( $parts as $p ) {
+		if ( '' === $p || '.' === $p || '..' === $p ) {
+			return new WP_Error( 'aiwp_bad_path', 'Empty, "." and ".." segments are refused.', array( 'status' => 400 ) );
+		}
+	}
+	$name = end( $parts );
+	if ( 'root' === $base ) {
+		$allowed = 1 === count( $parts ) && ( ( '.htaccess' === $name && 'delete' !== $op ) || in_array( $name, explode( ',', AIWP_ROOT_DELETE ), true ) );
+	} else {
+		$dot = false;
+		foreach ( $parts as $p ) {
+			$dot = $dot || '.' === $p[0];
+		}
+		$allowed = ! $dot && in_array( strtolower( pathinfo( $name, PATHINFO_EXTENSION ) ), explode( ',', AIWP_FILE_EXTENSIONS ), true )
+			&& ! ( 'mu-plugins' === $base && 0 === strpos( $name, 'aiwp-' ) );
+	}
+	if ( ! $allowed ) {
+		return new WP_Error( 'aiwp_file_not_allowed', 'This file may not be ' . ( 'read' === $op ? 'read' : 'changed' ) . ' through this route.', array( 'status' => 403 ) );
+	}
+	list( $root, $cap ) = $bases[ $base ];
+	if ( ! current_user_can( $cap ) ) {
+		return new WP_Error( 'aiwp_file_cap', 'Missing capability ' . $cap . ' (DISALLOW_FILE_EDIT or DISALLOW_FILE_MODS may be set).', array( 'status' => 403 ) );
+	}
+	$path = rtrim( $root, '/\\' ) . '/' . implode( '/', $parts );
+	$rel  = $base . '/' . implode( '/', $parts );
+	if ( @is_link( $path ) ) {
+		return new WP_Error( 'aiwp_file_link', 'Symbolic links are refused.', array( 'status' => 403 ) );
+	}
+	$real = @realpath( $path );
+	if ( false === $real ) {
+		$parent = @realpath( dirname( $path ) );
+		if ( 'restore' === $op && false !== $parent && aiwp_path_inside( $parent, $root ) ) {
+			return array( 'rel' => $rel, 'path' => $parent . DIRECTORY_SEPARATOR . $name, 'exists' => false );
+		}
+		return new WP_Error( 'aiwp_file_missing', 'No such file.', array( 'status' => 404 ) );
+	}
+	if ( ! aiwp_path_inside( $real, $root ) || ! @is_file( $real ) ) {
+		return new WP_Error( 'aiwp_file_outside', 'The file is not a regular file inside ' . $base . '/.', array( 'status' => 403 ) );
+	}
+	return array( 'rel' => $rel, 'path' => $real, 'exists' => true );
+}
+
+function aiwp_file_backups_index() {
+	$idx = get_site_option( AIWP_FILE_BACKUPS_OPTION );
+	return is_array( $idx ) ? $idx : array();
+}
+
+function aiwp_file_backup( $rel, $content, $action ) {
+	$dir = aiwp_private_dir( 'aiwp-backups' );
+	if ( null === $dir ) {
+		return new WP_Error( 'aiwp_backup_dir', 'No writable folder for backups; nothing was changed.', array( 'status' => 500 ) );
+	}
+	$file = wp_generate_password( 20, false ) . '.bak';
+	if ( false === @file_put_contents( $dir . '/' . $file, $content, LOCK_EX ) ) {
+		return new WP_Error( 'aiwp_backup_write', 'Could not write the backup; nothing was changed.', array( 'status' => 500 ) );
+	}
+	$idx    = aiwp_file_backups_index();
+	$list   = isset( $idx[ $rel ] ) ? (array) $idx[ $rel ] : array();
+	$entry  = array( 'file' => $file, 'dir' => $dir, 'saved' => gmdate( 'c' ), 'sha256' => hash( 'sha256', $content ), 'size' => strlen( $content ), 'before' => $action );
+	array_unshift( $list, $entry );
+	foreach ( array_slice( $list, AIWP_FILE_BACKUPS_KEEP ) as $old ) {
+		@unlink( $old['dir'] . '/' . $old['file'] );
+	}
+	$idx[ $rel ] = array_slice( $list, 0, AIWP_FILE_BACKUPS_KEEP );
+	update_site_option( AIWP_FILE_BACKUPS_OPTION, $idx );
+	return $entry;
+}
+
+/** Deletes every backup file, the folders' deny files and the folders themselves, then the index. */
+function aiwp_file_backups_purge() {
+	$dirs = array();
+	foreach ( aiwp_file_backups_index() as $list ) {
+		foreach ( (array) $list as $b ) {
+			if ( preg_match( '/^[A-Za-z0-9]{20}\.bak$/', (string) $b['file'] ) && 'aiwp-backups' === basename( (string) $b['dir'] ) ) {
+				@unlink( $b['dir'] . '/' . $b['file'] );
+				$dirs[ $b['dir'] ] = true;
+			}
+		}
+	}
+	foreach ( array_keys( $dirs ) as $dir ) {
+		if ( ! @is_link( $dir ) ) {
+			@unlink( $dir . '/.htaccess' );
+			@unlink( $dir . '/index.php' );
+			@rmdir( $dir );
+		}
+	}
+	delete_site_option( AIWP_FILE_BACKUPS_OPTION );
+}
+
+/** Home page and REST index from inside the server, cache-busted. ok = both answered 2xx/3xx. */
+function aiwp_site_check() {
+	$out = array( 'ok' => true );
+	foreach ( array( 'home' => home_url( '/' ), 'rest' => rest_url() ) as $k => $url ) {
+		$res = wp_remote_get( add_query_arg( 'aiwp_check', wp_generate_password( 8, false ), $url ), array(
+			'timeout'     => 10,
+			'redirection' => 3,
+			'sslverify'   => apply_filters( 'https_local_ssl_verify', false ),
+			'headers'     => array( 'Cache-Control' => 'no-cache' ),
+		) );
+		$code      = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
+		$out[ $k ] = is_wp_error( $res ) ? $res->get_error_message() : $code;
+		if ( $code < 200 || $code >= 400 ) {
+			$out['ok'] = false;
+		}
+	}
+	return $out;
+}
+
+/** Writes $new (null = delete) over $old (null = absent), with backup, check and automatic roll-back. */
+function aiwp_file_commit( $f, $old, $new, $action ) {
+	if ( null !== $new && 'php' === strtolower( pathinfo( $f['path'], PATHINFO_EXTENSION ) ) ) {
+		try {
+			token_get_all( $new, TOKEN_PARSE );
+		} catch ( ParseError $e ) {
+			return new WP_Error( 'aiwp_file_parse', 'Nothing was written: the new file does not parse on PHP ' . PHP_VERSION . ' (' . $e->getMessage() . ', line ' . $e->getLine() . ').', array( 'status' => 422 ) );
+		}
+	}
+	$before = aiwp_site_check();
+	$backup = null;
+	if ( null !== $old ) {
+		$backup = aiwp_file_backup( $f['rel'], $old, $action );
+		if ( is_wp_error( $backup ) ) {
+			return $backup;
+		}
+	}
+	$done = null === $new ? ( @unlink( $f['path'] ) ? true : new WP_Error( 'aiwp_file_delete', 'Could not delete the file.', array( 'status' => 500 ) ) ) : aiwp_atomic_write( $f['path'], $new );
+	if ( is_wp_error( $done ) ) {
+		return $done;
+	}
+	$after = aiwp_site_check();
+	if ( $before['ok'] && ! $after['ok'] ) {
+		$undo = null === $old ? @unlink( $f['path'] ) : aiwp_atomic_write( $f['path'], $old );
+		return new WP_Error( 'aiwp_file_rolled_back', 'The site stopped answering after the change, so the previous state was put back.', array(
+			'status'       => 409,
+			'check_before' => $before,
+			'check_after'  => $after,
+			'rolled_back'  => true === $undo,
+		) );
+	}
+	do_action( 'litespeed_purge_all' );
+	return array(
+		'path'         => $f['rel'],
+		'action'       => $action,
+		'sha256'       => null === $new ? null : hash( 'sha256', $new ),
+		'backup_saved' => $backup ? $backup['saved'] : null,
+		'check_before' => $before,
+		'check_after'  => $after,
+	);
+}
+
+function aiwp_file_read_checked( $f, $expect ) {
+	$size = (int) @filesize( $f['path'] );
+	if ( $size > AIWP_FILE_MAX_BYTES ) {
+		return new WP_Error( 'aiwp_file_big', 'Files over ' . AIWP_FILE_MAX_BYTES . ' bytes are refused.', array( 'status' => 413 ) );
+	}
+	$content = @file_get_contents( $f['path'] );
+	if ( false === $content ) {
+		return new WP_Error( 'aiwp_file_read', 'Could not read the file.', array( 'status' => 500 ) );
+	}
+	if ( null !== $expect && ! hash_equals( hash( 'sha256', $content ), strtolower( trim( (string) $expect ) ) ) ) {
+		return new WP_Error( 'aiwp_file_changed', 'The file changed since it was read; read it again and pass the new sha256 as expect.', array( 'status' => 409, 'sha256' => hash( 'sha256', $content ) ) );
+	}
+	return $content;
+}
+
+function aiwp_file_get( WP_REST_Request $req ) {
+	$f = aiwp_file_resolve( $req->get_param( 'path' ), 'read' );
+	if ( is_wp_error( $f ) ) {
+		return $f;
+	}
+	$content = aiwp_file_read_checked( $f, null );
+	if ( is_wp_error( $content ) ) {
+		return $content;
+	}
+	$idx = aiwp_file_backups_index();
+	return array(
+		'path'    => $f['rel'],
+		'size'    => strlen( $content ),
+		'mtime'   => (int) filemtime( $f['path'] ),
+		'sha256'  => hash( 'sha256', $content ),
+		'content' => $content,
+		'backups' => isset( $idx[ $f['rel'] ] ) ? array_map( function ( $b ) { return array( 'saved' => $b['saved'], 'sha256' => $b['sha256'], 'size' => $b['size'], 'before' => $b['before'] ); }, $idx[ $f['rel'] ] ) : array(),
+	);
+}
+
+function aiwp_file_patch( WP_REST_Request $req ) {
+	$f = aiwp_file_resolve( $req->get_param( 'path' ), 'patch' );
+	if ( is_wp_error( $f ) ) {
+		return $f;
+	}
+	$old = aiwp_file_read_checked( $f, $req->get_param( 'expect' ) );
+	if ( is_wp_error( $old ) ) {
+		return $old;
+	}
+	$new  = $old;
+	$crlf = false !== strpos( $old, "\r\n" );
+	foreach ( (array) $req->get_param( 'replacements' ) as $i => $r ) {
+		$find    = isset( $r['find'] ) ? (string) $r['find'] : '';
+		$replace = isset( $r['replace'] ) ? (string) $r['replace'] : '';
+		if ( $crlf ) {
+			$find    = str_replace( "\n", "\r\n", str_replace( "\r\n", "\n", $find ) );
+			$replace = str_replace( "\n", "\r\n", str_replace( "\r\n", "\n", $replace ) );
+		}
+		$n = '' === $find ? 0 : substr_count( $new, $find );
+		if ( 1 !== $n ) {
+			return new WP_Error( 'aiwp_file_find', 'Nothing was written: replacement ' . ( $i + 1 ) . ' occurs ' . $n . ' times, it must occur exactly once.', array( 'status' => 409 ) );
+		}
+		$new = str_replace( $find, $replace, $new );
+	}
+	if ( $new === $old ) {
+		return new WP_Error( 'aiwp_file_same', 'Nothing to change.', array( 'status' => 400 ) );
+	}
+	return aiwp_file_commit( $f, $old, $new, 'patch' );
+}
+
+function aiwp_file_delete( WP_REST_Request $req ) {
+	$f = aiwp_file_resolve( $req->get_param( 'path' ), 'delete' );
+	if ( is_wp_error( $f ) ) {
+		return $f;
+	}
+	$old = aiwp_file_read_checked( $f, $req->get_param( 'expect' ) );
+	return is_wp_error( $old ) ? $old : aiwp_file_commit( $f, $old, null, 'delete' );
+}
+
+function aiwp_file_restore( WP_REST_Request $req ) {
+	$f = aiwp_file_resolve( $req->get_param( 'path' ), 'restore' );
+	if ( is_wp_error( $f ) ) {
+		return $f;
+	}
+	$idx   = aiwp_file_backups_index();
+	$saved = (string) $req->get_param( 'saved' );
+	$b     = null;
+	foreach ( isset( $idx[ $f['rel'] ] ) ? (array) $idx[ $f['rel'] ] : array() as $entry ) {
+		if ( '' === $saved || $entry['saved'] === $saved ) {
+			$b = $entry;
+			break;
+		}
+	}
+	if ( null === $b ) {
+		return new WP_Error( 'aiwp_no_backup', '' === $saved ? 'No backup of this file.' : 'No backup of this file was saved at ' . $saved . '; GET files?path= lists the backups.', array( 'status' => 404 ) );
+	}
+	$content = @file_get_contents( $b['dir'] . '/' . $b['file'] );
+	if ( false === $content || ! hash_equals( $b['sha256'], hash( 'sha256', $content ) ) ) {
+		return new WP_Error( 'aiwp_backup_bad', 'The newest backup is missing or does not match its checksum.', array( 'status' => 500 ) );
+	}
+	$old = $f['exists'] ? aiwp_file_read_checked( $f, null ) : null;
+	if ( is_wp_error( $old ) ) {
+		return $old;
+	}
+	return aiwp_file_commit( $f, $old, $content, 'restore' );
+}
+
+add_action( 'rest_api_init', 'aiwp_register_file_routes' );
+function aiwp_register_file_routes() {
+	$can = function () {
+		return current_user_can( 'manage_options' ) && aiwp_request_from_api_ip();
+	};
+	$path = array( 'required' => true, 'type' => 'string' );
+	register_rest_route( 'ai-wp/v1', '/files', array(
+		'methods'             => 'GET',
+		'permission_callback' => $can,
+		'args'                => array( 'path' => $path ),
+		'callback'            => 'aiwp_file_get',
+	) );
+	register_rest_route( 'ai-wp/v1', '/files/patch', array(
+		'methods'             => 'POST',
+		'permission_callback' => $can,
+		'args'                => array(
+			'path'         => $path,
+			'expect'       => array( 'required' => true, 'type' => 'string' ),
+			'replacements' => array( 'required' => true, 'type' => 'array', 'minItems' => 1, 'maxItems' => 50 ),
+		),
+		'callback'            => 'aiwp_file_patch',
+	) );
+	register_rest_route( 'ai-wp/v1', '/files/delete', array(
+		'methods'             => 'POST',
+		'permission_callback' => $can,
+		'args'                => array( 'path' => $path, 'expect' => array( 'required' => true, 'type' => 'string' ) ),
+		'callback'            => 'aiwp_file_delete',
+	) );
+	register_rest_route( 'ai-wp/v1', '/files/restore', array(
+		'methods'             => 'POST',
+		'permission_callback' => $can,
+		'args'                => array( 'path' => $path, 'saved' => array( 'type' => 'string', 'default' => '' ) ),
+		'callback'            => 'aiwp_file_restore',
+	) );
+}
+
+/* ------------------------------------------------------------------ rescue mode (must-use plugin) */
+
+/*
+ * A REST request (/wp-json/ or ?rest_route=) from a managing-server address that carries the rescue key in the
+ * X-AIWP-Rescue header loads WordPress without the other plugins and without the theme's functions.php, so a plugin or
+ * theme that breaks every request can still be switched off through the normal routes. ?aiwp_skip=slug1,slug2 skips only
+ * those plugins ("theme" also skips the theme). The lists are filtered only while plugins and theme load, so nothing the
+ * request saves afterwards sees the shortened lists. The REST call itself still authenticates with an application
+ * password. The key is created by POST ai-wp/v1/rescue/key (returned once, stored as sha256). Settings can switch it off.
+ */
+define( 'AIWP_RESCUE_OPTION', 'aiwp_rescue' );
+define( 'AIWP_RESCUE_MU_FILE', 'aiwp-rescue.php' );
+define( 'AIWP_RESCUE_VERSION', 1 );
+
+function aiwp_rescue_mu_path() {
+	return WPMU_PLUGIN_DIR . '/' . AIWP_RESCUE_MU_FILE;
+}
+
+function aiwp_rescue_get() {
+	$r = get_site_option( AIWP_RESCUE_OPTION );
+	return array_merge( array( 'enabled' => 0, 'hash' => '', 'ips' => array(), 'self' => '' ), is_array( $r ) ? $r : array() );
+}
+
+function aiwp_rescue_state() {
+	$r = aiwp_rescue_get();
+	return array( 'enabled' => (bool) $r['enabled'], 'key_set' => '' !== $r['hash'], 'mu_plugin' => file_exists( aiwp_rescue_mu_path() ) );
+}
+
+/** Copies the address list into the rescue option (the must-use plugin reads only that) and writes or removes the file. */
+function aiwp_rescue_sync() {
+	$r = aiwp_rescue_get();
+	if ( '' === $r['hash'] && ! file_exists( aiwp_rescue_mu_path() ) ) {
+		return;
+	}
+	$r['ips']  = aiwp_api_ips();
+	$r['self'] = plugin_basename( __FILE__ );
+	update_site_option( AIWP_RESCUE_OPTION, $r );
+	aiwp_rescue_ensure();
+}
+
+add_action( 'admin_init', 'aiwp_rescue_ensure' );
+add_action( 'rest_api_init', 'aiwp_rescue_ensure' );
+function aiwp_rescue_ensure() {
+	$r    = aiwp_rescue_get();
+	$path = aiwp_rescue_mu_path();
+	if ( ! $r['enabled'] || '' === $r['hash'] ) {
+		if ( file_exists( $path ) && ! @is_link( $path ) ) {
+			@unlink( $path );
+		}
+		return;
+	}
+	if ( $r['ips'] !== aiwp_api_ips() || plugin_basename( __FILE__ ) !== $r['self'] ) {
+		aiwp_rescue_sync();
+		return;
+	}
+	if ( file_exists( $path ) && false !== strpos( (string) @file_get_contents( $path, false, null, 0, 600 ), 'AIWP_RESCUE_V' . AIWP_RESCUE_VERSION . ' ' ) ) {
+		return;
+	}
+	if ( wp_mkdir_p( WPMU_PLUGIN_DIR ) && ! @is_link( $path ) ) {
+		@file_put_contents( $path, aiwp_rescue_mu_source(), LOCK_EX );
+	}
+}
+
+function aiwp_rescue_new_key() {
+	if ( ! aiwp_request_from_api_ip() ) {
+		return new WP_Error( 'aiwp_not_api_ip', 'Only the managing server may create the rescue key.', array( 'status' => 403 ) );
+	}
+	$key        = bin2hex( random_bytes( 32 ) );
+	$r          = aiwp_rescue_get();
+	$r['hash']  = hash( 'sha256', $key );
+	$r['enabled'] = 1;
+	update_site_option( AIWP_RESCUE_OPTION, $r );
+	aiwp_rescue_sync();
+	return array_merge( array( 'key' => $key, 'header' => 'X-AIWP-Rescue' ), aiwp_rescue_state() );
+}
+
+function aiwp_rescue_set_enabled( $enabled ) {
+	$r            = aiwp_rescue_get();
+	$r['enabled'] = $enabled ? 1 : 0;
+	update_site_option( AIWP_RESCUE_OPTION, $r );
+	aiwp_rescue_ensure();
+	return aiwp_rescue_state();
+}
+
+function aiwp_rescue_uninstall() {
+	$path = aiwp_rescue_mu_path();
+	if ( file_exists( $path ) && ! @is_link( $path ) ) {
+		@unlink( $path );
+	}
+}
+register_deactivation_hook( __FILE__, 'aiwp_rescue_uninstall' );
+
+add_action( 'rest_api_init', 'aiwp_register_rescue_routes' );
+function aiwp_register_rescue_routes() {
+	register_rest_route( 'ai-wp/v1', '/rescue', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => 'aiwp_site_admin_can',
+			'callback'            => function () {
+				return array_merge( aiwp_rescue_state(), array( 'active_now' => defined( 'AIWP_RESCUE_ACTIVE' ) ) );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => 'aiwp_site_admin_can',
+			'args'                => array( 'enabled' => array( 'required' => true, 'type' => 'boolean' ) ),
+			'callback'            => function ( $req ) {
+				return aiwp_rescue_set_enabled( (bool) $req->get_param( 'enabled' ) );
+			},
+		),
+	) );
+	register_rest_route( 'ai-wp/v1', '/rescue/key', array(
+		'methods'             => 'POST',
+		'permission_callback' => 'aiwp_site_admin_can',
+		'callback'            => 'aiwp_rescue_new_key',
+	) );
+}
+
+/** Self-contained (no plugin functions), loaded before every plugin. Keep it PHP 7.0 compatible. */
+function aiwp_rescue_mu_source() {
+	return "<?php\n"
+		. "/*\n * Plugin Name: AI WP Site Manager - rescue mode\n"
+		. " * Description: Written by AI WP Site Manager (AIWP_RESCUE_V" . AIWP_RESCUE_VERSION . " ). Lets the managing server reach the REST API with the other plugins and the theme skipped, when one of them breaks every request. Switch it off in Settings -> AI Site Manager.\n */\n"
+		. "defined( 'ABSPATH' ) || exit;\n"
+		. "( function () {\n"
+		. "\t\$key = isset( \$_SERVER['HTTP_X_AIWP_RESCUE'] ) ? (string) \$_SERVER['HTTP_X_AIWP_RESCUE'] : '';\n"
+		. "\t\$uri = isset( \$_SERVER['REQUEST_URI'] ) ? (string) \$_SERVER['REQUEST_URI'] : '';\n"
+		. "\tif ( '' === \$key || ( false === strpos( \$uri, '/wp-json/' ) && ! isset( \$_GET['rest_route'] ) ) ) {\n"
+		. "\t\treturn;\n"
+		. "\t}\n"
+		. "\t\$r = get_site_option( '" . AIWP_RESCUE_OPTION . "' );\n"
+		. "\tif ( ! is_array( \$r ) || empty( \$r['enabled'] ) || empty( \$r['hash'] ) || empty( \$r['ips'] ) || ! hash_equals( (string) \$r['hash'], hash( 'sha256', \$key ) ) ) {\n"
+		. "\t\treturn;\n"
+		. "\t}\n"
+		. "\t\$norm = function ( \$ip ) {\n"
+		. "\t\t\$ip = trim( (string) \$ip );\n"
+		. "\t\t\$b = false === strpos( \$ip, \"\\0\" ) ? @inet_pton( \$ip ) : false;\n"
+		. "\t\tif ( false === \$b ) {\n"
+		. "\t\t\treturn '';\n"
+		. "\t\t}\n"
+		. "\t\tif ( 16 === strlen( \$b ) && 0 === strpos( \$b, str_repeat( \"\\0\", 10 ) . \"\\xff\\xff\" ) ) {\n"
+		. "\t\t\t\$b = substr( \$b, 12 );\n"
+		. "\t\t}\n"
+		. "\t\treturn (string) inet_ntop( \$b );\n"
+		. "\t};\n"
+		. "\t\$remote = \$norm( isset( \$_SERVER['REMOTE_ADDR'] ) ? \$_SERVER['REMOTE_ADDR'] : '' );\n"
+		. "\t\$fwd = array();\n"
+		. "\tforeach ( array( 'HTTP_X_REAL_IP', 'HTTP_X_CLIENT_IP', 'HTTP_TRUE_CLIENT_IP', 'HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR' ) as \$h ) {\n"
+		. "\t\tif ( ! empty( \$_SERVER[ \$h ] ) ) {\n"
+		. "\t\t\tforeach ( explode( ',', (string) \$_SERVER[ \$h ] ) as \$v ) {\n"
+		. "\t\t\t\t\$fwd[ \$norm( \$v ) ] = true;\n"
+		. "\t\t\t}\n"
+		. "\t\t}\n"
+		. "\t}\n"
+		. "\tif ( ! empty( \$_SERVER['HTTP_FORWARDED'] ) && preg_match_all( '/for=\\s*\"?\\[?([^\\]\";,\\s]+)/i', (string) \$_SERVER['HTTP_FORWARDED'], \$m ) ) {\n"
+		. "\t\tforeach ( \$m[1] as \$v ) {\n"
+		. "\t\t\t\$fwd[ \$norm( \$v ) ] = true;\n"
+		. "\t\t}\n"
+		. "\t}\n"
+		. "\t\$ip = \$remote;\n"
+		. "\t\$self_ip = \$norm( isset( \$_SERVER['SERVER_ADDR'] ) ? \$_SERVER['SERVER_ADDR'] : '' );\n"
+		. "\tif ( \$fwd && '' !== \$remote && ( \$remote === \$self_ip || '127.0.0.1' === \$remote || '::1' === \$remote ) ) {\n"
+		. "\t\t\$ip = ( 1 === count( \$fwd ) && ! isset( \$fwd[''] ) ) ? (string) key( \$fwd ) : '';\n"
+		. "\t}\n"
+		. "\tif ( '' === \$ip || ! in_array( \$ip, (array) \$r['ips'], true ) ) {\n"
+		. "\t\treturn;\n"
+		. "\t}\n"
+		. "\tdefine( 'AIWP_RESCUE_ACTIVE', true );\n"
+		. "\theader( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0, private' );\n"
+		. "\theader( 'X-LiteSpeed-Cache-Control: no-cache' );\n"
+		. "\theader( 'X-AIWP-Rescue: active' );\n"
+		. "\t\$self = (string) \$r['self'];\n"
+		. "\t\$skip = isset( \$_GET['aiwp_skip'] ) ? array_filter( array_map( 'trim', explode( ',', (string) \$_GET['aiwp_skip'] ) ) ) : array();\n"
+		. "\t\$keep = function ( \$file ) use ( \$self, \$skip ) {\n"
+		. "\t\tif ( \$file === \$self ) {\n"
+		. "\t\t\treturn true;\n"
+		. "\t\t}\n"
+		. "\t\treturn \$skip && ! in_array( preg_replace( '/\\.php\$/', '', strtok( (string) \$file, '/' ) ), \$skip, true );\n"
+		. "\t};\n"
+		. "\t\$plugins = function ( \$list ) use ( \$keep ) {\n"
+		. "\t\treturn array_values( array_filter( (array) \$list, \$keep ) );\n"
+		. "\t};\n"
+		. "\t\$network = function ( \$list ) use ( \$keep ) {\n"
+		. "\t\t\$out = array();\n"
+		. "\t\tforeach ( (array) \$list as \$f => \$t ) {\n"
+		. "\t\t\tif ( \$keep( \$f ) ) {\n"
+		. "\t\t\t\t\$out[ \$f ] = \$t;\n"
+		. "\t\t\t}\n"
+		. "\t\t}\n"
+		. "\t\treturn \$out;\n"
+		. "\t};\n"
+		. "\tadd_filter( 'option_active_plugins', \$plugins, PHP_INT_MAX );\n"
+		. "\tadd_filter( 'site_option_active_sitewide_plugins', \$network, PHP_INT_MAX );\n"
+		. "\t\$unplug = function () use ( \$plugins, \$network, &\$unplug ) {\n"
+		. "\t\tremove_filter( 'option_active_plugins', \$plugins, PHP_INT_MAX );\n"
+		. "\t\tremove_filter( 'site_option_active_sitewide_plugins', \$network, PHP_INT_MAX );\n"
+		. "\t\tremove_action( 'plugin_loaded', \$unplug, PHP_INT_MIN );\n"
+		. "\t\tremove_action( 'plugins_loaded', \$unplug, PHP_INT_MIN );\n"
+		. "\t};\n"
+		. "\tadd_action( 'plugin_loaded', \$unplug, PHP_INT_MIN );\n"
+		. "\tadd_action( 'plugins_loaded', \$unplug, PHP_INT_MIN );\n"
+		. "\tif ( ! \$skip || in_array( 'theme', \$skip, true ) ) {\n"
+		. "\t\t\$none = WP_CONTENT_DIR . '/aiwp-rescue-no-theme';\n"
+		. "\t\t\$dir = function () use ( \$none ) {\n"
+		. "\t\t\treturn \$none;\n"
+		. "\t\t};\n"
+		. "\t\tadd_filter( 'template_directory', \$dir, PHP_INT_MAX );\n"
+		. "\t\tadd_filter( 'stylesheet_directory', \$dir, PHP_INT_MAX );\n"
+		. "\t\tadd_filter( 'validate_current_theme', '__return_false', PHP_INT_MAX );\n"
+		. "\t\tadd_action( 'after_setup_theme', function () use ( \$dir ) {\n"
+		. "\t\t\tremove_filter( 'template_directory', \$dir, PHP_INT_MAX );\n"
+		. "\t\t\tremove_filter( 'stylesheet_directory', \$dir, PHP_INT_MAX );\n"
+		. "\t\t\tremove_action( 'init', '_register_theme_block_patterns' );\n"
+		. "\t\t}, PHP_INT_MIN );\n"
+		. "\t}\n"
+		. "} )();\n";
+}
+
+/* ------------------------------------------------------------------ security: settings section */
+
+add_action( 'admin_post_aiwp_security', 'aiwp_handle_security_form' );
+function aiwp_handle_security_form() {
+	if ( ! aiwp_site_admin_can() ) {
+		wp_die( 'Not allowed.' );
+	}
+	check_admin_referer( 'aiwp_security' );
+	$s      = aiwp_security_get();
+	$notice = array( 'status' => 'saved', 'file' => 'security settings', 'message' => '' );
+	$mode   = isset( $_POST['aiwp_mode'] ) ? sanitize_key( $_POST['aiwp_mode'] ) : $s['mode'];
+	if ( 'on' === $mode && 'on' !== $s['mode'] ) {
+		$notice = array( 'status' => 'error', 'file' => '', 'message' => 'The lock is switched on only by the managing server itself (POST ai-wp/v1/security {mode: on}), which proves its own calls still pass. Other changes were saved.' );
+	} elseif ( in_array( $mode, array( 'off', 'report', 'on' ), true ) ) {
+		$s['mode'] = $mode;
+	}
+	if ( ! defined( 'AIWP_API_IPS' ) && isset( $_POST['aiwp_ips'] ) ) {
+		$ips = array();
+		foreach ( preg_split( '/[\s,]+/', wp_unslash( (string) $_POST['aiwp_ips'] ) ) as $ip ) {
+			$ip = aiwp_ip_normalize( $ip );
+			if ( '' !== $ip ) {
+				$ips[] = $ip;
+			}
+		}
+		$s['ips'] = $ips ? array_values( array_unique( $ips ) ) : null;
+	}
+	if ( isset( $_POST['aiwp_unclaim'] ) ) {
+		$s['uuids'] = array_values( array_diff( (array) $s['uuids'], array( sanitize_text_field( wp_unslash( $_POST['aiwp_unclaim'] ) ) ) ) );
+	}
+	if ( isset( $_POST['aiwp_clear_report'] ) ) {
+		$s['report'] = array();
+	}
+	aiwp_security_save( $s );
+	aiwp_rescue_set_enabled( ! empty( $_POST['aiwp_rescue_enabled'] ) );
+	set_transient( 'aiwp_notice_' . get_current_user_id(), $notice, 60 );
+	wp_safe_redirect( admin_url( 'options-general.php?page=ai-wp-site-manager#security' ) );
+	exit;
+}
+
+/** Rendered inside aiwp_settings_page(). */
+function aiwp_render_security_section() {
+	if ( ! aiwp_site_admin_can() ) {
+		return;
+	}
+	$st    = aiwp_security_state();
+	$modes = array( 'off' => 'Off', 'report' => 'Report only (log, never refuse)', 'on' => 'On (refuse)' );
+	echo '<h2 id="security" style="margin-top:2em">Managing server access</h2>';
+	echo '<p class="description">The application passwords claimed by the managing server work only from the addresses below; every other application password is not affected. The addresses are also the only ones allowed to use the file routes and rescue mode. Your current address is seen as <code>' . esc_html( $st['request']['seen_as'] ) . '</code>.</p>';
+	echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+	wp_nonce_field( 'aiwp_security' );
+	echo '<input type="hidden" name="action" value="aiwp_security">';
+	echo '<p><label>Lock <select name="aiwp_mode">';
+	foreach ( $modes as $k => $label ) {
+		echo '<option value="' . esc_attr( $k ) . '"' . selected( $st['mode'], $k, false ) . '>' . esc_html( $label ) . '</option>';
+	}
+	echo '</select></label></p>';
+	echo '<p class="description">"On" can be chosen here only to keep it on; the managing server switches it on itself. An empty address list goes back to the default (' . esc_html( AIWP_DEFAULT_API_IPS ) . ').</p>';
+	echo '<p><label>Managing-server addresses, one per line<br><textarea name="aiwp_ips" rows="3" cols="40"' . ( $st['ips_from_constant'] ? ' readonly' : '' ) . '>' . esc_textarea( implode( "\n", $st['ips'] ) ) . '</textarea></label>';
+	echo $st['ips_from_constant'] ? '<br><span class="description">Set by AIWP_API_IPS in wp-config.php.</span>' : '';
+	echo '</p>';
+	if ( $st['claimed'] ) {
+		echo '<p><strong>Claimed application passwords:</strong></p><ul>';
+		foreach ( $st['claimed'] as $c ) {
+			$u = get_userdata( $c['user_id'] );
+			echo '<li>' . esc_html( $c['name'] . ' (' . ( $u ? $u->user_login : $c['user_id'] ) . ', last IP ' . $c['last_ip'] . ')' ) . ' <button type="submit" class="button button-small" name="aiwp_unclaim" value="' . esc_attr( $c['uuid'] ) . '">Release</button></li>';
+		}
+		echo '</ul>';
+	} else {
+		echo '<p>No application password is claimed; the lock has nothing to protect yet.</p>';
+	}
+	echo '<p><label><input type="checkbox" name="aiwp_rescue_enabled" value="1"' . checked( $st['rescue']['enabled'], true, false ) . '> Rescue mode</label> <span class="description">(' . ( $st['rescue']['key_set'] ? 'key set' : 'no key yet' ) . ', must-use plugin ' . ( $st['rescue']['mu_plugin'] ? 'present' : 'absent' ) . ')</span></p>';
+	echo '<p class="description">XML-RPC is ' . ( $st['xmlrpc_enabled'] ? 'on (the Jetpack connection uses it)' : 'off' ) . '. Alerts about new administrators and application passwords go to the site e-mail address and ' . esc_html( $st['alert_email'] ) . '.</p>';
+	echo '<p><button type="submit" class="button button-primary">Save</button></p>';
+	if ( $st['report'] ) {
+		echo '<p><strong>Calls from other addresses:</strong></p><table class="widefat striped" style="max-width:900px"><thead><tr><th>When</th><th>Seen as</th><th>Connection</th><th>Forwarded</th><th>Password</th><th>Refused</th></tr></thead><tbody>';
+		foreach ( $st['report'] as $e ) {
+			echo '<tr><td>' . esc_html( $e['at'] ) . '</td><td>' . esc_html( $e['seen_as'] ) . '</td><td>' . esc_html( $e['remote'] ) . '</td><td>' . esc_html( $e['forwarded'] ) . '</td><td>' . esc_html( $e['name'] ) . '</td><td>' . ( $e['refused'] ? 'yes' : 'no' ) . '</td></tr>';
+		}
+		echo '</tbody></table><p><button type="submit" class="button" name="aiwp_clear_report" value="1">Clear the list</button></p>';
+	}
+	echo '</form>';
+}
+
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.16.0' );
+define( 'CSM_VERSION', '1.17.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

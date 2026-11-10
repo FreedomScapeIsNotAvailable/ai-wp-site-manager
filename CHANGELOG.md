@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.17.0
+- Files: GET ai-wp/v1/files?path=, POST files/patch {path, expect, replacements}, files/delete, files/restore {path, saved?} for existing theme, plugin and must-use plugin files (php, css, js, json, txt, html), the root .htaccess and a root index.html; this plugin's own files are refused. Managing-server address only, sha256 check against the version that was read, PHP parsed before saving, last 5 versions kept as backups (any of them can be restored), and an automatic roll-back when the home page or /wp-json/ stops answering after the change.
+- Rescue mode: a must-use plugin lets one REST request from the managing server, carrying the rescue key (POST rescue/key), load WordPress without the other plugins and the theme's functions.php, so a plugin or theme that breaks every request can still be switched off. Settings switch.
+- Managing-server lock: application passwords claimed by the managing server (POST security/claim) are accepted only from its addresses (report-only first, POST security {mode}). Other application passwords are not affected.
+- Visitors no longer see login slugs: REST user list and slug/search lookups, ?author=N is a 404 on sites with pretty permalinks, no users sitemap, no oEmbed author_url. XML-RPC is off unless the Jetpack connection uses it.
+- E-mail alert to the site address and alerts@reallife.solutions when an administrator is added, a super admin is granted or an application password is created (at most 10 an hour).
+
 ## 1.16.0
 - Bulk user cleanup: GET ai-wp/v1/users/role-count?role=subscriber and POST ai-wp/v1/users/delete-by-role {role, expect_count, reassign, limit 1..500, default 200} delete the users of one role in batches (e.g. subscribers imported years ago), giving their content to the reassign user. Administrators, users who can manage options and the calling user are never deleted; the administrator role is refused; expect_count must equal the live count (409 otherwise, nothing deleted). Needs manage_options and delete_users; single sites only. Built because the core batch endpoint is blocked by some server firewalls.
 
