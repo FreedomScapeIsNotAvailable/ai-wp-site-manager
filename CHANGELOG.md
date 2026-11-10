@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.17.1
+- XML-RPC stays on only when the site is actually connected to Jetpack (WordPress.com site id and site token saved), not when the Jetpack connection code is merely present: WooCommerce ships that code on every shop, so 1.17.0 left XML-RPC on for every WooCommerce site.
+
 ## 1.17.0
 - Files: GET ai-wp/v1/files?path=, POST files/patch {path, expect, replacements}, files/delete, files/restore {path, saved?} for existing theme, plugin and must-use plugin files (php, css, js, json, txt, html), the root .htaccess and a root index.html; this plugin's own files are refused. Managing-server address only, sha256 check against the version that was read, PHP parsed before saving, last 5 versions kept as backups (any of them can be restored), and an automatic roll-back when the home page or /wp-json/ stops answering after the change.
 - Rescue mode: a must-use plugin lets one REST request from the managing server, carrying the rescue key (POST rescue/key), load WordPress without the other plugins and the theme's functions.php, so a plugin or theme that breaks every request can still be switched off. Settings switch.

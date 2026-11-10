@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.17.0
+ * Version:           1.17.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -2581,9 +2581,15 @@ add_filter( 'oembed_response_data', function ( $data ) {
 	return $data;
 } );
 
-/* XML-RPC stays only where the Jetpack connection (Jetpack, WooPayments, Jetpack Backup, Boost...) needs it. */
+/*
+ * XML-RPC stays only where a live Jetpack connection (Jetpack, WooPayments, Jetpack Backup, Boost...) needs it. The
+ * connection code alone proves nothing: WooCommerce ships it on every shop. Connected = WordPress.com site id + site token.
+ */
 function aiwp_xmlrpc_needed() {
-	return (bool) apply_filters( 'aiwp_keep_xmlrpc', class_exists( 'Jetpack' ) || class_exists( 'Automattic\Jetpack\Connection\Manager' ) );
+	$opts    = get_option( 'jetpack_options' );
+	$private = get_option( 'jetpack_private_options' );
+	$linked  = is_array( $opts ) && ! empty( $opts['id'] ) && is_array( $private ) && ! empty( $private['blog_token'] );
+	return (bool) apply_filters( 'aiwp_keep_xmlrpc', $linked );
 }
 
 add_filter( 'xmlrpc_enabled', function ( $enabled ) {
@@ -3299,7 +3305,7 @@ function aiwp_render_security_section() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.17.0' );
+define( 'CSM_VERSION', '1.17.1' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

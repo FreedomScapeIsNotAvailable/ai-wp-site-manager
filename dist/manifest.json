@@ -1,11 +1,11 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.17.0",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.17.0.zip",
+  "version": "1.17.1",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.17.1.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "sha256": "586e93fc30bf9b91bdd9d07e8775be048a9cec691bf32132ed076d4eba95e85a",
-  "changelog": "<h4>1.17.0</h4><ul><li>Files: GET ai-wp/v1/files?path=, POST files/patch {path, expect, replacements}, files/delete, files/restore {path, saved?} for existing theme, plugin and must-use plugin files (php, css, js, json, txt, html), the root .htaccess and a root index.html; this plugin's own files are refused. Managing-server address only, sha256 check against the version that was read, PHP parsed before saving, last 5 versions kept as backups (any of them can be restored), and an automatic roll-back when the home page or /wp-json/ stops answering after the change.</li><li>Rescue mode: a must-use plugin lets one REST request from the managing server, carrying the rescue key (POST rescue/key), load WordPress without the other plugins and the theme's functions.php, so a plugin or theme that breaks every request can still be switched off. Settings switch.</li><li>Managing-server lock: application passwords claimed by the managing server (POST security/claim) are accepted only from its addresses (report-only first, POST security {mode}). Other application passwords are not affected.</li><li>Visitors no longer see login slugs: REST user list and slug/search lookups, ?author=N is a 404 on sites with pretty permalinks, no users sitemap, no oEmbed author_url. XML-RPC is off unless the Jetpack connection uses it.</li><li>E-mail alert to the site address and alerts@reallife.solutions when an administrator is added, a super admin is granted or an application password is created (at most 10 an hour).</li></ul>"
+  "sha256": "7506afc4f5812eda1392beec92af716cd564cb79dc9c28098734d3f3c18b88f5",
+  "changelog": "<h4>1.17.1</h4><ul><li>XML-RPC stays on only when the site is actually connected to Jetpack (WordPress.com site id and site token saved), not when the Jetpack connection code is merely present: WooCommerce ships that code on every shop, so 1.17.0 left XML-RPC on for every WooCommerce site.</li></ul>"
 }
