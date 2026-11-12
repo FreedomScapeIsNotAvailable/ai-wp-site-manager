@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.18.0
+ * Version:           1.18.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -2700,6 +2700,18 @@ function aiwp_file_bases() {
 	);
 }
 
+/*
+ * DISALLOW_FILE_EDIT (also switched on by security plugins: Solid / Kadence / iThemes "Disable File Editor") exists to
+ * keep a stolen admin browser session away from wp-admin's PHP editor. The file and HTTPS routes are already limited to
+ * the managing server's addresses, so there they need manage_options instead; the browser editor stays off.
+ * DISALLOW_FILE_MODS still blocks them.
+ */
+function aiwp_file_editor_bypass() {
+	return defined( 'DISALLOW_FILE_EDIT' ) && DISALLOW_FILE_EDIT
+		&& ! ( defined( 'DISALLOW_FILE_MODS' ) && DISALLOW_FILE_MODS )
+		&& current_user_can( 'manage_options' ) && aiwp_request_from_api_ip();
+}
+
 /** $op read | patch | delete | restore. Returns rel, path, exists, or a WP_Error. */
 function aiwp_file_resolve( $rel, $op ) {
 	if ( false !== strpos( (string) $rel, "\0" ) ) {
@@ -2734,8 +2746,8 @@ function aiwp_file_resolve( $rel, $op ) {
 		return new WP_Error( 'aiwp_file_not_allowed', 'This file may not be ' . ( 'read' === $op ? 'read' : 'changed' ) . ' through this route.', array( 'status' => 403 ) );
 	}
 	list( $root, $cap ) = $bases[ $base ];
-	if ( ! current_user_can( $cap ) ) {
-		return new WP_Error( 'aiwp_file_cap', 'Missing capability ' . $cap . ' (DISALLOW_FILE_EDIT or DISALLOW_FILE_MODS may be set).', array( 'status' => 403 ) );
+	if ( ! current_user_can( $cap ) && ! aiwp_file_editor_bypass() ) {
+		return new WP_Error( 'aiwp_file_cap', 'Missing capability ' . $cap . ' (DISALLOW_FILE_MODS may be set).', array( 'status' => 403 ) );
 	}
 	$path = rtrim( $root, '/\\' ) . '/' . implode( '/', $parts );
 	$rel  = $base . '/' . implode( '/', $parts );
@@ -3442,7 +3454,7 @@ function aiwp_render_security_section() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.18.0' );
+define( 'CSM_VERSION', '1.18.1' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

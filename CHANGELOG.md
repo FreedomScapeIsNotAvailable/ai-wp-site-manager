@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.18.1
+- Files and HTTPS routes keep working when the WordPress file editor is switched off (DISALLOW_FILE_EDIT, also set by Solid / Kadence / iThemes Security's "Disable File Editor"): from the managing server's addresses they then need manage_options instead of edit_plugins / edit_themes. The wp-admin file editor stays off; DISALLOW_FILE_MODS still blocks the routes.
+
 ## 1.18.0
 - HTTPS switch: GET ai-wp/v1/https reports the site and WordPress addresses, whether HTTPS works (WordPress's own detection), whether WP_HOME / WP_SITEURL are fixed in wp-config.php and whether the http -> https redirect is in place. POST ai-wp/v1/https {redirect?} moves both addresses to https with core's wp_update_urls_to_https() (the Site Health button; old http links in content are rewritten by core when shown), checks the home page and /wp-json/ and puts the old addresses back if they stop answering. With redirect: true it also adds a marked http -> https 301 block at the top of the root .htaccess (/.well-known/ left on http for certificate renewals, X-Forwarded-Proto respected), with the same backup, check and roll-back as files/patch. Managing-server address only; 409 when HTTPS does not answer yet or the addresses are fixed in wp-config.php.
 
