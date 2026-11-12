@@ -37,6 +37,8 @@ All under `/wp-json/ai-wp/v1/`, JSON in and out, authenticated with an Applicati
 | POST | `themes/install` | `{"slug": "astra"}` | install_themes |
 | POST | `themes/activate` | `{"stylesheet": "astra"}` | switch_themes |
 | POST | `themes/delete` | `{"stylesheet": "twentytwentyfour"}` | delete_themes |
+| GET | `https` | | manage_options, managing-server address |
+| POST | `https` | `{"redirect": true}` | manage_options + edit_plugins for the redirect, managing-server address |
 
 Hosts that need FTP credentials for updates (filesystem method is not `direct`) get a clear
 error. Add `define('FS_METHOD', 'direct');` to `wp-config.php` or fix file ownership.

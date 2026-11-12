@@ -1,11 +1,11 @@
 {
   "name": "AI WP Site Manager",
   "slug": "ai-wp-site-manager",
-  "version": "1.17.1",
-  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.17.1.zip",
+  "version": "1.18.0",
+  "package": "https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/ai-wp-site-manager-1.18.0.zip",
   "requires": "5.8",
   "requires_php": "7.4",
   "tested": "",
-  "sha256": "7506afc4f5812eda1392beec92af716cd564cb79dc9c28098734d3f3c18b88f5",
-  "changelog": "<h4>1.17.1</h4><ul><li>XML-RPC stays on only when the site is actually connected to Jetpack (WordPress.com site id and site token saved), not when the Jetpack connection code is merely present: WooCommerce ships that code on every shop, so 1.17.0 left XML-RPC on for every WooCommerce site.</li></ul>"
+  "sha256": "35e43febc2406f2c69f71f7699089357ad5310a556c05ddb5a349363fc65f7a3",
+  "changelog": "<h4>1.18.0</h4><ul><li>HTTPS switch: GET ai-wp/v1/https reports the site and WordPress addresses, whether HTTPS works (WordPress's own detection), whether WP_HOME / WP_SITEURL are fixed in wp-config.php and whether the http -> https redirect is in place. POST ai-wp/v1/https {redirect?} moves both addresses to https with core's wp_update_urls_to_https() (the Site Health button; old http links in content are rewritten by core when shown), checks the home page and /wp-json/ and puts the old addresses back if they stop answering. With redirect: true it also adds a marked http -> https 301 block at the top of the root .htaccess (/.well-known/ left on http for certificate renewals, X-Forwarded-Proto respected), with the same backup, check and roll-back as files/patch. Managing-server address only; 409 when HTTPS does not answer yet or the addresses are fixed in wp-config.php.</li></ul>"
 }

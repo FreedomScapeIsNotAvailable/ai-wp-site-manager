@@ -3,7 +3,7 @@
  * Plugin Name:       AI WP Site Manager
  * Plugin URI:        https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager
  * Description:       REST endpoints (namespace ai-wp/v1) for plugin/theme updates and theme management, plus {INCLUDE:/path/} content includes and a Settings page to edit llms.txt and robots.txt in place. Used by the team's Claude WordPress connector. Updates itself from GitHub.
- * Version:           1.17.1
+ * Version:           1.18.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            reallife.solutions
@@ -3002,6 +3002,143 @@ function aiwp_register_file_routes() {
 	) );
 }
 
+/* ------------------------------------------------------------------ HTTPS switch */
+
+/*
+ * GET ai-wp/v1/https reports the site and WordPress addresses and whether HTTPS works. POST switches both addresses to
+ * https with core's wp_update_urls_to_https() (what Site Health's button does; old http links in content are rewritten
+ * by core when shown), checks home + /wp-json/ and puts the old addresses back if they stop answering. redirect: true
+ * also puts a marked http -> https 301 block at the top of the root .htaccess, through the same backup + check +
+ * roll-back as files/patch. Managing-server address only.
+ */
+define( 'AIWP_HTTPS_MARKER', 'AIWP HTTPS' );
+
+function aiwp_https_block() {
+	return '# BEGIN ' . AIWP_HTTPS_MARKER . "\n"
+		. "<IfModule mod_rewrite.c>\n"
+		. "RewriteEngine On\n"
+		. "RewriteCond %{HTTPS} !=on\n"
+		. "RewriteCond %{HTTP:X-Forwarded-Proto} !https\n"
+		. "RewriteCond %{REQUEST_URI} !^/\\.well-known/\n"
+		. "RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]\n"
+		. "</IfModule>\n"
+		. '# END ' . AIWP_HTTPS_MARKER . "\n";
+}
+
+function aiwp_https_htaccess() {
+	$f = aiwp_file_resolve( 'root/.htaccess', 'patch' );
+	$c = is_wp_error( $f ) ? $f : aiwp_file_read_checked( $f, null );
+	if ( is_wp_error( $c ) ) {
+		return array( 'file' => null, 'content' => null, 'error' => $c->get_error_message() );
+	}
+	return array( 'file' => $f, 'content' => $c, 'error' => '' );
+}
+
+function aiwp_https_state() {
+	$ht = aiwp_https_htaccess();
+	return array(
+		'home'               => get_option( 'home' ),
+		'siteurl'            => get_option( 'siteurl' ),
+		'using_https'        => wp_is_using_https(),
+		'https_supported'    => wp_is_https_supported(),
+		'detection_errors'   => function_exists( 'wp_get_https_detection_errors' ) ? wp_get_https_detection_errors() : array(),
+		'home_constant'      => defined( 'WP_HOME' ),
+		'siteurl_constant'   => defined( 'WP_SITEURL' ),
+		'migration_required' => (bool) get_option( 'https_migration_required' ),
+		'redirect'           => null === $ht['content'] ? null : false !== strpos( $ht['content'], '# BEGIN ' . AIWP_HTTPS_MARKER ),
+		'htaccess_error'     => $ht['error'],
+	);
+}
+
+function aiwp_https_switch_urls( $state ) {
+	if ( $state['using_https'] ) {
+		return array( 'switched' => false, 'reason' => 'Both addresses already use https.' );
+	}
+	if ( $state['home_constant'] || $state['siteurl_constant'] ) {
+		return new WP_Error( 'aiwp_https_constant', 'WP_HOME or WP_SITEURL is defined in wp-config.php; change it there. Nothing was changed.', array( 'status' => 409 ) );
+	}
+	if ( ! $state['https_supported'] ) {
+		return new WP_Error( 'aiwp_https_unsupported', 'HTTPS does not answer correctly for this site yet (certificate or server). Nothing was changed.', array( 'status' => 409, 'detection_errors' => $state['detection_errors'] ) );
+	}
+	$home    = get_option( 'home' );
+	$siteurl = get_option( 'siteurl' );
+	$before  = aiwp_site_check();
+	if ( ! wp_update_urls_to_https() ) {
+		return new WP_Error( 'aiwp_https_refused', 'WordPress did not accept the https addresses and kept the old ones.', array( 'status' => 500 ) );
+	}
+	$after = aiwp_site_check();
+	if ( $before['ok'] && ! $after['ok'] ) {
+		update_option( 'home', $home );
+		update_option( 'siteurl', $siteurl );
+		return new WP_Error( 'aiwp_https_rolled_back', 'The site stopped answering on https, so the old addresses were put back.', array( 'status' => 409, 'check_before' => $before, 'check_after' => $after ) );
+	}
+	return array( 'switched' => true, 'from' => array( $home, $siteurl ), 'check_before' => $before, 'check_after' => $after );
+}
+
+function aiwp_https_add_redirect() {
+	$ht = aiwp_https_htaccess();
+	if ( null === $ht['content'] ) {
+		return new WP_Error( 'aiwp_https_htaccess', 'The redirect was not added: ' . $ht['error'], array( 'status' => 409 ) );
+	}
+	$rest = preg_replace( '/# BEGIN ' . AIWP_HTTPS_MARKER . '.*?# END ' . AIWP_HTTPS_MARKER . '\R*/s', '', $ht['content'] );
+	$new  = aiwp_https_block() . "\n" . ltrim( $rest, "\r\n" );
+	if ( $new === $ht['content'] ) {
+		return array( 'added' => false, 'reason' => 'The redirect block is already in place.' );
+	}
+	$done = aiwp_file_commit( $ht['file'], $ht['content'], $new, 'https-redirect' );
+	if ( is_wp_error( $done ) ) {
+		return $done;
+	}
+	$probe = wp_remote_get( set_url_scheme( home_url( '/' ), 'http' ), array( 'timeout' => 10, 'redirection' => 0, 'sslverify' => false ) );
+	$done['added'] = true;
+	$done['http_probe'] = is_wp_error( $probe ) ? $probe->get_error_message() : array(
+		'code'     => (int) wp_remote_retrieve_response_code( $probe ),
+		'location' => wp_remote_retrieve_header( $probe, 'location' ),
+	);
+	return $done;
+}
+
+function aiwp_https_switch( WP_REST_Request $req ) {
+	$state = aiwp_https_state();
+	$urls  = aiwp_https_switch_urls( $state );
+	if ( is_wp_error( $urls ) ) {
+		$urls->add_data( array_merge( (array) $urls->get_error_data(), array( 'state' => $state ) ) );
+		return $urls;
+	}
+	$out = array( 'ok' => true, 'urls' => $urls );
+	if ( $req->get_param( 'redirect' ) ) {
+		$redirect = aiwp_https_add_redirect();
+		if ( is_wp_error( $redirect ) ) {
+			$out['ok'] = false;
+			$redirect  = array( 'added' => false, 'error' => $redirect->get_error_code(), 'message' => $redirect->get_error_message(), 'data' => $redirect->get_error_data() );
+		}
+		$out['redirect'] = $redirect;
+	}
+	do_action( 'litespeed_purge_all' );
+	$out['state'] = aiwp_https_state();
+	return $out;
+}
+
+add_action( 'rest_api_init', 'aiwp_register_https_routes' );
+function aiwp_register_https_routes() {
+	$can = function () {
+		return current_user_can( 'manage_options' ) && aiwp_request_from_api_ip();
+	};
+	register_rest_route( 'ai-wp/v1', '/https', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $can,
+			'callback'            => 'aiwp_https_state',
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $can,
+			'args'                => array( 'redirect' => array( 'type' => 'boolean', 'default' => false ) ),
+			'callback'            => 'aiwp_https_switch',
+		),
+	) );
+}
+
 /* ------------------------------------------------------------------ rescue mode (must-use plugin) */
 
 /*
@@ -3305,7 +3442,7 @@ function aiwp_render_security_section() {
 
 /* ------------------------------------------------------------------ self-update */
 
-define( 'CSM_VERSION', '1.17.1' );
+define( 'CSM_VERSION', '1.18.0' );
 define( 'CSM_SLUG', 'ai-wp-site-manager' );
 define( 'CSM_REPO_URL', 'https://github.com/FreedomScapeIsNotAvailable/ai-wp-site-manager' );
 define( 'CSM_MANIFEST_URL', 'https://raw.githubusercontent.com/FreedomScapeIsNotAvailable/ai-wp-site-manager/main/dist/manifest.json' );

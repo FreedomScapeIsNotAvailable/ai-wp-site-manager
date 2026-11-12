@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.18.0
+- HTTPS switch: GET ai-wp/v1/https reports the site and WordPress addresses, whether HTTPS works (WordPress's own detection), whether WP_HOME / WP_SITEURL are fixed in wp-config.php and whether the http -> https redirect is in place. POST ai-wp/v1/https {redirect?} moves both addresses to https with core's wp_update_urls_to_https() (the Site Health button; old http links in content are rewritten by core when shown), checks the home page and /wp-json/ and puts the old addresses back if they stop answering. With redirect: true it also adds a marked http -> https 301 block at the top of the root .htaccess (/.well-known/ left on http for certificate renewals, X-Forwarded-Proto respected), with the same backup, check and roll-back as files/patch. Managing-server address only; 409 when HTTPS does not answer yet or the addresses are fixed in wp-config.php.
+
 ## 1.17.1
 - XML-RPC stays on only when the site is actually connected to Jetpack (WordPress.com site id and site token saved), not when the Jetpack connection code is merely present: WooCommerce ships that code on every shop, so 1.17.0 left XML-RPC on for every WooCommerce site.
 
